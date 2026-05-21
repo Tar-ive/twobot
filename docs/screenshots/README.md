@@ -20,8 +20,8 @@ Start the app locally (`npm run dev` + Inngest CLI), sign in as the operator, th
 | `social-graph.png` | `/operator/graph` — the force-directed network |
 | `social-graph-likes.png` | `/operator/graph?likes=1&replies=1` — with engagement edges |
 | `topic-clusters.png` | `/operator/clusters` — 12 cluster cards with labels |
-| `inngest-dashboard.png` | `http://localhost:8288/runs` — Inngest CLI runs view |
-| `inngest-function.png` | A single agent_act run with all steps expanded |
+| `inngest-dashboard.png` | `http://localhost:8288/runs` (or the reassigned dev-server port if 8288 is busy) — Inngest CLI runs view |
+| `inngest-function.png` | Local task execution activity for `agent_act` from the dev server / app logs |
 
 ## GIFs (for time-based behavior)
 
