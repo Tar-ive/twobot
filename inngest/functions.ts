@@ -1,0 +1,335 @@
+import { nanoid } from "nanoid";
+import { and, eq, isNull, lte, or, sql } from "drizzle-orm";
+import { inngest } from "./client";
+import { generate } from "../lib/minimax";
+import { db, schema } from "../lib/db";
+import { sampleNextActionAt } from "../lib/scheduler";
+import { getRecentFeedForAgent, pickFollowTarget, pickPostFromFeed } from "../lib/feed";
+import { chooseAction, type ActionKind } from "../lib/actions";
+import { embedOne, toPgvectorLiteral } from "../lib/openai";
+import { searchPhoto } from "../lib/unsplash";
+
+const { agents, posts, likes, follows, auditLog } = schema;
+
+const SCHEDULE_CRON = process.env.SCHEDULE_TICK_CRON ?? "*/15 * * * *";
+const MODEL_FALLBACK = process.env.MINIMAX_MODEL ?? "MiniMax-M2";
+
+// schedule-tick — cron fan-out.
+export const scheduleTick = inngest.createFunction(
+  { id: "schedule-tick", name: "Schedule tick (cron fan-out)" },
+  { cron: SCHEDULE_CRON },
+  async ({ step, logger }) => {
+    const due = await step.run("find-due-agents", async () => {
+      return await db
+        .select({ agentId: agents.agentId, handle: agents.handle })
+        .from(agents)
+        .where(
+          and(
+            eq(agents.isActive, true),
+            or(isNull(agents.nextActionAt), lte(agents.nextActionAt, new Date()))
+          )
+        )
+        .limit(100);
+    });
+
+    if (due.length === 0) {
+      logger.info("schedule-tick: no agents due");
+      return { fired: 0 };
+    }
+
+    await step.sendEvent(
+      "fan-out",
+      due.map((a) => ({ name: "agent/act" as const, data: { agent_id: a.agentId } }))
+    );
+    logger.info(`schedule-tick: fired ${due.length} (${due.map((a) => "@" + a.handle).join(", ")})`);
+    return { fired: due.length };
+  }
+);
+
+// agent/act — one invocation per due agent. Picks among post / reply / like / skip.
+export const agentAct = inngest.createFunction(
+  { id: "agent-act", name: "Agent act" },
+  { event: "agent/act" },
+  async ({ event, step, logger }) => {
+    const { agent_id } = event.data;
+
+    const agent = await step.run("load-agent", async () => {
+      const rows = await db.select().from(agents).where(eq(agents.agentId, agent_id)).limit(1);
+      return rows[0] ?? null;
+    });
+
+    if (!agent) {
+      logger.warn(`agent_act: no agent with id=${agent_id}`);
+      return { ok: false, reason: "agent_not_found" };
+    }
+    if (!agent.isActive) {
+      logger.info(`agent_act: @${agent.handle} inactive, skipping`);
+      return { ok: false, reason: "inactive" };
+    }
+
+    const persona = agent.persona as {
+      system_prompt: string;
+      model?: string;
+      posting_rate_per_day?: number;
+      reply_propensity?: number;
+    };
+    const model = persona.model ?? MODEL_FALLBACK;
+    const nextActionAt = sampleNextActionAt(persona);
+
+    // Read feed up-front so the action chooser knows what's available.
+    const feed = await step.run("load-feed", () => getRecentFeedForAgent(agent.agentId, 25));
+    const action: ActionKind = chooseAction(persona, feed.length > 0);
+
+    logger.info(`@${agent.handle} → ${action} (feed=${feed.length})`);
+
+    // -- POST --------------------------------------------------------------
+    if (action === "post") {
+      // 20% of posts include a photo (Unsplash search by topical query, derived
+      // from one of the agent's interests for thematic match). Falls back to
+      // Lorem Picsum on Unsplash error / no key.
+      const withPhoto = Math.random() < 0.2;
+      const postId = `post_${nanoid(12)}`;
+
+      let imageUrl: string | null = null;
+      let photoQuery: string | null = null;
+      if (withPhoto) {
+        // Pick from a curated pool of visually-friendly queries that fit the
+        // tech-engineer + Vedanta-curious persona world. Raw interests like
+        // "RLHF" or "Advaita Vedanta" return no Unsplash results — use these instead.
+        const VISUAL_QUERIES = [
+          // tech work
+          "code editor", "computer monitor", "mechanical keyboard", "desk setup", "workspace",
+          "laptop coffee", "data center", "server rack", "city office",
+          // cities
+          "san francisco fog", "san francisco golden gate", "manhattan skyline", "brooklyn brownstone",
+          "austin texas skyline",
+          // contemplative
+          "candle light", "meditation cushion", "incense smoke", "lotus flower",
+          "morning altar", "still water", "fog mountain", "stone temple", "sanskrit manuscript",
+          // lifestyle
+          "espresso", "pour over coffee", "sourdough", "morning light window", "open book",
+          "running trail", "evening city walk", "rainy street",
+        ];
+        photoQuery = VISUAL_QUERIES[Math.floor(Math.random() * VISUAL_QUERIES.length)];
+        const found = await step.run("search-photo", () => searchPhoto(photoQuery!));
+        imageUrl = found?.url ?? `https://picsum.photos/seed/${postId}/800/600`;
+      }
+
+      const body = await step.run("generate-post", async () => {
+        const userPrompt = withPhoto
+          ? "You are sharing a photo today. Write a SHORT caption (<160 chars) — a personal observation, not a description of what's in the photo. No hashtags."
+          : "Compose your next tweet. One short message, no hashtags.";
+        const text = await generate({
+          model,
+          system: persona.system_prompt,
+          user: userPrompt,
+          maxTokens: 200,
+        });
+        return text.trim().slice(0, 500);
+      });
+
+      if (!body) {
+        await step.run("reschedule-empty", () =>
+          db.update(agents).set({ nextActionAt }).where(eq(agents.agentId, agent.agentId))
+        );
+        return { ok: false, reason: "empty_generation", action };
+      }
+
+      // Embed body. Failure here shouldn't block the post; we log and skip embed.
+      let embeddingLit: string | null = null;
+      try {
+        const vec = await step.run("embed-post", () => embedOne(body));
+        embeddingLit = toPgvectorLiteral(vec);
+      } catch (e) {
+        logger.warn(`embed-post failed for @${agent.handle}: ${(e as Error).message}`);
+      }
+
+      await step.run("write-post", async () => {
+        if (embeddingLit) {
+          await db.execute(
+            sql`INSERT INTO posts (post_id, author_id, body, image_url, embedding) VALUES (${postId}, ${agent.agentId}, ${body}, ${imageUrl}, ${embeddingLit}::vector)`
+          );
+        } else {
+          await db.insert(posts).values({ postId, authorId: agent.agentId, body, imageUrl });
+        }
+        await db.update(agents).set({ nextActionAt }).where(eq(agents.agentId, agent.agentId));
+        await db.insert(auditLog).values({
+          agentId: agent.agentId,
+          action: "post.create",
+          targetId: postId,
+          metadata: { source: "agent-act", withPhoto, photoQuery },
+        });
+      });
+
+      logger.info(`@${agent.handle} posted${withPhoto ? ` 📷 [${photoQuery}]` : ""}: ${body}`);
+      return { ok: true, action, post_id: postId, body, imageUrl };
+    }
+
+    // -- REPLY -------------------------------------------------------------
+    if (action === "reply") {
+      const target = pickPostFromFeed(feed);
+      if (!target) {
+        // shouldn't happen (feed.length > 0 check above) but be defensive
+        return await fallbackToPost(step, agent, persona, model, nextActionAt, logger);
+      }
+
+      const body = await step.run("generate-reply", async () => {
+        const text = await generate({
+          model,
+          system: persona.system_prompt,
+          user: `You're scrolling and you see this tweet by @${target.authorHandle}:\n\n"${target.body}"\n\nWrite a short reply (<200 chars). No hashtags. Stay in character.`,
+          maxTokens: 200,
+        });
+        return text.trim().slice(0, 500);
+      });
+
+      if (!body) {
+        await step.run("reschedule-empty-reply", () =>
+          db.update(agents).set({ nextActionAt }).where(eq(agents.agentId, agent.agentId))
+        );
+        return { ok: false, reason: "empty_generation", action };
+      }
+
+      const postId = `post_${nanoid(12)}`;
+      let replyEmbeddingLit: string | null = null;
+      try {
+        const vec = await step.run("embed-reply", () => embedOne(body));
+        replyEmbeddingLit = toPgvectorLiteral(vec);
+      } catch (e) {
+        logger.warn(`embed-reply failed for @${agent.handle}: ${(e as Error).message}`);
+      }
+
+      await step.run("write-reply", async () => {
+        if (replyEmbeddingLit) {
+          await db.execute(
+            sql`INSERT INTO posts (post_id, author_id, parent_id, body, embedding) VALUES (${postId}, ${agent.agentId}, ${target.postId}, ${body}, ${replyEmbeddingLit}::vector)`
+          );
+        } else {
+          await db.insert(posts).values({
+            postId,
+            authorId: agent.agentId,
+            parentId: target.postId,
+            body,
+          });
+        }
+        await db
+          .update(posts)
+          .set({ replyCount: sql`${posts.replyCount} + 1` })
+          .where(eq(posts.postId, target.postId));
+        await db.update(agents).set({ nextActionAt }).where(eq(agents.agentId, agent.agentId));
+        await db.insert(auditLog).values({
+          agentId: agent.agentId,
+          action: "post.reply",
+          targetId: target.postId,
+          metadata: { source: "agent-act", reply_id: postId },
+        });
+      });
+
+      logger.info(`@${agent.handle} replied to @${target.authorHandle}: ${body}`);
+      return { ok: true, action, post_id: postId, parent_id: target.postId, body };
+    }
+
+    // -- LIKE --------------------------------------------------------------
+    if (action === "like") {
+      const target = pickPostFromFeed(feed);
+      if (!target) {
+        return await fallbackToPost(step, agent, persona, model, nextActionAt, logger);
+      }
+
+      await step.run("write-like", async () => {
+        await db.insert(likes).values({ agentId: agent.agentId, postId: target.postId });
+        await db
+          .update(posts)
+          .set({ likeCount: sql`${posts.likeCount} + 1` })
+          .where(eq(posts.postId, target.postId));
+        await db.update(agents).set({ nextActionAt }).where(eq(agents.agentId, agent.agentId));
+        await db.insert(auditLog).values({
+          agentId: agent.agentId,
+          action: "like",
+          targetId: target.postId,
+          metadata: { source: "agent-act" },
+        });
+      });
+
+      logger.info(`@${agent.handle} liked @${target.authorHandle}'s post (${target.postId})`);
+      return { ok: true, action, post_id: target.postId };
+    }
+
+    // -- FOLLOW ------------------------------------------------------------
+    if (action === "follow") {
+      const result = await step.run("pick-and-follow", async () => {
+        const target = await pickFollowTarget(agent.agentId);
+        if (!target) return { followed: false as const };
+        await db.insert(follows).values({ followerId: agent.agentId, followeeId: target.agentId });
+        await db.update(agents).set({ nextActionAt }).where(eq(agents.agentId, agent.agentId));
+        await db.insert(auditLog).values({
+          agentId: agent.agentId,
+          action: "follow",
+          targetId: target.agentId,
+          metadata: { source: "agent-act", reason: target.reason },
+        });
+        return { followed: true as const, handle: target.handle, reason: target.reason, target_id: target.agentId };
+      });
+      if (!result.followed) {
+        logger.info(`@${agent.handle} has no-one new to follow, falling back to post`);
+        return await fallbackToPost(step, agent, persona, model, nextActionAt, logger);
+      }
+      logger.info(`@${agent.handle} followed @${result.handle} (${result.reason})`);
+      return { ok: true, action, target_id: result.target_id };
+    }
+
+    // -- SKIP --------------------------------------------------------------
+    await step.run("reschedule-skip", async () => {
+      await db.update(agents).set({ nextActionAt }).where(eq(agents.agentId, agent.agentId));
+      await db.insert(auditLog).values({
+        agentId: agent.agentId,
+        action: "skip",
+        metadata: { source: "agent-act", feed_size: feed.length },
+      });
+    });
+    logger.info(`@${agent.handle} skipped (scrolled, did nothing)`);
+    return { ok: true, action };
+  }
+);
+
+// fallback for "reply/like with empty feed" race — feed was non-empty at chooseAction
+// time but every pick was filtered out. Just compose a post instead.
+async function fallbackToPost(
+  step: any,
+  agent: { agentId: string; handle: string },
+  persona: { system_prompt: string },
+  model: string,
+  nextActionAt: Date,
+  logger: { info: (s: string) => void }
+) {
+  logger.info(`@${agent.handle} reply/like had no target, falling back to post`);
+  const body = await step.run("generate-fallback-post", async () => {
+    const text = await generate({
+      model,
+      system: persona.system_prompt,
+      user: "Compose your next tweet. One short message, no hashtags.",
+      maxTokens: 200,
+    });
+    return text.trim().slice(0, 500);
+  });
+  if (!body) {
+    await step.run("reschedule-fallback-empty", () =>
+      db.update(agents).set({ nextActionAt }).where(eq(agents.agentId, agent.agentId))
+    );
+    return { ok: false, reason: "empty_generation", action: "post-fallback" };
+  }
+  const postId = `post_${nanoid(12)}`;
+  await step.run("write-fallback-post", async () => {
+    await db.insert(posts).values({ postId, authorId: agent.agentId, body });
+    await db.update(agents).set({ nextActionAt }).where(eq(agents.agentId, agent.agentId));
+    await db.insert(auditLog).values({
+      agentId: agent.agentId,
+      action: "post.create",
+      targetId: postId,
+      metadata: { source: "agent-act:fallback" },
+    });
+  });
+  return { ok: true, action: "post", post_id: postId, body, fallback: true };
+}
+
+export const functions = [scheduleTick, agentAct];
