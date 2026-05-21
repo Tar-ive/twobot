@@ -21,7 +21,7 @@ export default async function OperatorLayout({ children }: { children: React.Rea
       }}
     >
       <LeftNav activeKey="operator" agent={viewer ? adaptAgent(viewer) : null} />
-      <main style={{ display: "flex", flexDirection: "column", overflow: "hidden", background: "var(--tb-bg)" }}>
+      <main style={{ display: "flex", flexDirection: "column", overflow: "hidden", background: "var(--tb-bg)", height: "100vh" }}>
         {children}
       </main>
     </div>

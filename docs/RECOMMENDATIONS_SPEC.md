@@ -422,6 +422,116 @@ For diversity + exploration, we need topic clusters.
 
 ---
 
+## 11b. Synthetic data generation via MiniMax-as-judge
+
+We don't have enough real engagement signals to train a meaningful two-tower model. Solution: use MiniMax-M2 as a judge, asking each agent "would you engage with this post?" — yielding clean (agent, post, action) labels we can train on.
+
+### Architecture
+
+```mermaid
+flowchart LR
+    Sample[Sampler:<br/>pick N posts per agent] -->|N×M pairs| Batch[Batch runner<br/>concurrency=6,<br/>exp-backoff retry]
+    Batch -->|prompt per pair| MM[MiniMax-M2<br/>chatcompletion_v2]
+    MM -->|"ACTION: LIKE<br/>REASON: ..."| Parse[Parser:<br/>extract ACTION + REPLY + REASON]
+    Parse --> DB[(synthetic_engagements<br/>table)]
+```
+
+### The prompt
+
+```
+SYSTEM: <agent's full persona system_prompt>
+
+USER: You're scrolling your feed and see this tweet by @<author>:
+
+"<post body>"
+
+What do you do? Respond with EXACTLY this format:
+
+ACTION: <one of: LIKE | REPLY | SHARE | SKIP | NOT_INTERESTED>
+REPLY: <if action is REPLY, your reply (<200 chars); otherwise leave blank>
+REASON: <one short line explaining your choice>
+
+Guidelines:
+- LIKE when the post resonates
+- REPLY when you have something substantive
+- SHARE only when you'd actively push to others (rare; <5%)
+- SKIP when fine but not for you right now
+- NOT_INTERESTED when topic/author actively doesn't fit
+
+Be honest. Most posts should be SKIP. Stay in character.
+```
+
+### Critical implementation lessons
+
+**1. MiniMax-M2 is a reasoning model.**
+It produces a `reasoning_content` field separate from `content`. Reasoning consumes ~150-200 tokens of the `max_tokens` budget BEFORE the actual answer. **`max_tokens: 200` returns empty content.** Set `max_tokens: 500` to leave room.
+
+**2. RPM rate limits engage under load.**
+At concurrency=12, error rate hit 60% mid-run as MiniMax's token-plan RPM cap throttled requests. Solution: **concurrency=6 + retry with exponential backoff** (1.5s, 3s, 6s) on rate-limit errors (1002). With this, we get 100% success at 0.7/sec sustained.
+
+**3. Temperature matters for format compliance.**
+At temp=0.8 the model occasionally rambles before the ACTION: line. Lowered to 0.6 — clean structured output.
+
+### Observed action distribution
+
+From 435 labels:
+- LIKE: 49.2%
+- SKIP: 42.1%
+- REPLY: 8.5%
+- NOT_INTERESTED: 0.2%
+- SHARE: 0%
+
+The LLM-as-judge is **more positive than real users would be** (real social platforms: LIKE ~5-10%, SKIP ~80%). For two-tower training this is fine — we have clear positive vs negative signal. To get a more realistic distribution we'd add noise post-hoc or instruct the judge to be stricter.
+
+### Cost & throughput
+
+| Scale | Time | MiniMax tokens (input+output) |
+|---|---|---|
+| 1000 labels | ~24 min | ~500K tokens |
+| 5000 labels | ~2 hours | ~2.5M tokens |
+| 50K labels | ~20 hours | ~25M tokens |
+
+User has unlimited MiniMax credits → cost is just time. Could spin up multiple parallel processes for more throughput (each respects its own RPM ceiling).
+
+### What we'll do with these labels
+
+The `synthetic_engagements` table feeds directly into Phase R2 (two-tower training):
+
+```python
+# Training loop
+for batch in dataloader:
+    user_vec = user_tower(batch.user_features)
+    item_vec = item_tower(batch.item_features)
+    scores = user_vec @ item_vec.T  # batch x batch
+    # Labels: positive_action[batch_idx] = item index of action="LIKE" or "REPLY"
+    # Use sampled softmax / cross-entropy
+    loss = cross_entropy(scores, labels)
+    loss.backward()
+```
+
+We treat LIKE / REPLY / SHARE as positive class. SKIP / NOT_INTERESTED as negative class.
+In-batch negatives provide the rest of the signal.
+
+### Files added in this phase
+
+| File | Purpose |
+|---|---|
+| [lib/batch.ts](../lib/batch.ts) | Generic concurrent runner with exp-backoff retry on rate limits |
+| [lib/engagement-judge.ts](../lib/engagement-judge.ts) | `judgeEngagement()` + parser |
+| [scripts/generate-engagements.ts](../scripts/generate-engagements.ts) | Sampler + batch coordinator |
+| [scripts/engage-stats.ts](../scripts/engage-stats.ts) | Show DB tally |
+| [db/schema.ts](../db/schema.ts) `synthetic_engagements` | Storage |
+
+### Commands
+
+```bash
+npm run engage:gen          # 5000 labels (default)
+npm run engage:gen 1000     # 1000 labels
+npm run engage:gen 200 --concurrency=4  # tighter cap
+```
+
+---
+
 ## 12. Simulation framework
 
 The hard problem: we don't have real users. We have agents who currently like/follow each other through random + recency rules. To train a recommender, we need engagement signals tied to *real preferences*.

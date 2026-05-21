@@ -27,7 +27,9 @@ export async function runBatch<T, R>(
     const msg = (e?.message ?? String(e)).toLowerCase();
     return (
       msg.includes("rate limit") ||
+      msg.includes("throttle") ||
       msg.includes("1002") ||
+      msg.includes("429") ||
       msg.includes("unexpected shape") ||
       msg.includes("empty") ||
       msg.includes("timeout") ||

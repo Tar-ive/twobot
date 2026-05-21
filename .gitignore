@@ -1,6 +1,18 @@
 node_modules/
 .env
+.env.local
 .DS_Store
 *.log
 .next/
 dist/
+
+# Python venv + bytecode used only locally to train models
+train/venv/
+train/__pycache__/
+
+# Training data dump (5+ MB, regenerable from DB via npm run db: scripts)
+data/
+
+# Trained model weights .pt (large + regenerable). We keep ONNX exports.
+train/checkpoints/*.pt
+train/checkpoints/metrics.json

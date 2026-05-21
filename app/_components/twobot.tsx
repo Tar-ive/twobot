@@ -507,12 +507,13 @@ export function LeftNav({
       />
       <NavItem icon="grid" label="Operator" active={activeKey === "operator"} href="/operator" />
 
-      <button
+      <Link
+        href="/compose"
         className="tb-btn tb-btn-accent tb-btn-lg"
-        style={{ marginTop: 16, width: "100%", justifyContent: "center" }}
+        style={{ marginTop: 16, width: "100%", justifyContent: "center", textDecoration: "none" }}
       >
         <Icon name="pencil" size={16} /> Compose
-      </button>
+      </Link>
 
       {agent ? (
         <div

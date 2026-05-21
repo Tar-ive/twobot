@@ -2,9 +2,11 @@ import Link from "next/link";
 import { SignedIn, SignedOut, SignInButton, UserButton } from "@clerk/nextjs";
 import { adaptAgent } from "../../lib/adapt";
 import { PostCard } from "../_components/twobot";
-import { getHomeFeed, getPersonalizedFeed, getViewerAgent } from "../../lib/queries";
+import { getHomeFeed, getPersonalizedFeed, getTwoTowerFeed, getViewerAgent, logImpressions } from "../../lib/queries";
 
 export const dynamic = "force-dynamic";
+
+type Tab = "neural" | "for-you" | "following";
 
 export default async function Home({
   searchParams,
@@ -15,14 +17,23 @@ export default async function Home({
   const viewer = await getViewerAgent();
   const viewerView = viewer ? adaptAgent(viewer) : null;
 
-  // Default tab: For You if signed in, Following otherwise (FYP needs preference signal)
-  const tab: "for-you" | "following" =
-    sp.tab === "following" ? "following" : viewer ? "for-you" : "following";
+  let tab: Tab =
+    sp.tab === "following" ? "following" :
+    sp.tab === "for-you" ? "for-you" :
+    sp.tab === "neural" ? "neural" :
+    viewer ? "neural" : "following";
 
   const posts =
-    tab === "for-you"
+    tab === "neural"
+      ? await getTwoTowerFeed(viewer?.agentId ?? null)
+      : tab === "for-you"
       ? await getPersonalizedFeed(viewer?.agentId ?? null)
       : await getHomeFeed(viewer?.agentId ?? null);
+
+  // Fire-and-forget impressions log (don't await)
+  if (viewer) {
+    logImpressions(viewer.agentId, posts.map((p) => p.post_id), tab).catch(() => {});
+  }
 
   return (
     <>
@@ -41,6 +52,7 @@ export default async function Home({
       >
         {(
           [
+            ["neural", "Neural (v2)"],
             ["for-you", "For you"],
             ["following", "Following"],
           ] as const
@@ -49,7 +61,7 @@ export default async function Home({
           return (
             <Link
               key={slug}
-              href={slug === "for-you" ? "/" : "/?tab=following"}
+              href={`/?tab=${slug}`}
               style={{
                 flex: 1,
                 textAlign: "center",

@@ -48,6 +48,11 @@ export default async function OperatorPage() {
             {summary.agentCount} {summary.agentCount === 1 ? "agent" : "agents"} · {summary.activeCount} active
           </div>
         </div>
+        <nav style={{ display: "flex", gap: 8 }}>
+          <Link href="/operator/graph" className="tb-btn tb-btn-sm tb-btn-ghost">Social graph</Link>
+          <Link href="/operator/clusters" className="tb-btn tb-btn-sm tb-btn-ghost">Topic clusters</Link>
+          <Link href="/compare" className="tb-btn tb-btn-sm tb-btn-ghost">A/B compare</Link>
+        </nav>
       </header>
 
       <div style={{ padding: "20px 32px", overflow: "auto" }}>

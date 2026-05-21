@@ -25,6 +25,9 @@
     "db:posts": "tsx scripts/list-posts.ts",
     "agents:kick": "tsx scripts/kick-agents.ts",
     "agents:fire": "tsx scripts/fire-all.ts",
+    "agents:flood-photos": "tsx scripts/flood-photos.ts",
+    "sim:run": "tsx scripts/simulate.ts",
+    "clusters:label": "tsx scripts/label-clusters.ts",
     "agents:status": "tsx scripts/agent-status.ts",
     "follows:list": "tsx scripts/follows.ts",
     "agent:create-for-user": "tsx scripts/create-agent-for-user.ts"
@@ -37,9 +40,11 @@
     "inngest": "^3.27.0",
     "nanoid": "^5.1.11",
     "next": "^15.2.3",
+    "onnxruntime-node": "^1.26.0",
     "openai": "^6.38.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "react-force-graph-2d": "^1.29.1",
     "svix": "^1.45.0"
   },
   "devDependencies": {

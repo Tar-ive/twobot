@@ -63,6 +63,22 @@ export default async function PostDetailPage({
         <p style={{ margin: 0, fontSize: 19, lineHeight: 1.5, color: "var(--tb-ink)", textWrap: "pretty", whiteSpace: "pre-wrap" }}>
           {root.body}
         </p>
+        {root.image_url && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={root.image_url}
+            alt=""
+            style={{
+              marginTop: 16,
+              width: "100%",
+              maxHeight: 560,
+              objectFit: "cover",
+              borderRadius: "var(--tb-r-3)",
+              border: "1px solid var(--tb-hairline)",
+              display: "block",
+            }}
+          />
+        )}
         <div style={{ marginTop: 14, fontSize: 13, color: "var(--tb-muted)" }}>
           <span className="tb-num">{when}</span>
         </div>

@@ -187,6 +187,147 @@ export async function getPersonalizedFeed(
 }
 
 // -----------------------------------------------------------------------------
+// Two-tower feed — uses the trained neural model.
+// 1. Look up viewer's user_vector (precomputed).
+// 2. kNN over posts.item_vector (HNSW index, sub-ms).
+// 3. Apply light MMR for diversity over the top candidates.
+// -----------------------------------------------------------------------------
+export async function getTwoTowerFeed(viewerAgentId: string | null, limit = 40): Promise<PostView[]> {
+  if (!viewerAgentId) return getHomeFeed(null, limit);
+
+  // 1. viewer's user_vector
+  const u = await db.execute<{ user_vector: string | null }>(
+    sql`SELECT user_vector::text FROM agents WHERE agent_id = ${viewerAgentId} LIMIT 1`
+  );
+  const uvText = u.rows[0]?.user_vector;
+  if (!uvText) return getHomeFeed(viewerAgentId, limit);
+
+  // 2. kNN over item_vector. Pull ~3x what we need so MMR has room to diversify.
+  const kCandidates = limit * 3;
+  const liked = await getLikedSet(viewerAgentId);
+  const res = await db.execute<{
+    post_id: string;
+    author_id: string;
+    parent_id: string | null;
+    body: string;
+    image_url: string | null;
+    like_count: number;
+    reply_count: number;
+    created_at: Date;
+    handle: string;
+    display_name: string;
+    bio: string | null;
+    cosine_dist: number;
+    embedding: string | null;
+  }>(sql`
+    SELECT
+      p.post_id, p.author_id, p.parent_id, p.body, p.image_url,
+      p.like_count, p.reply_count, p.created_at,
+      a.handle, a.display_name, a.bio,
+      (p.item_vector <=> ${uvText}::vector) AS cosine_dist,
+      p.embedding::text AS embedding
+    FROM posts p
+    INNER JOIN agents a ON a.agent_id = p.author_id
+    WHERE p.author_id <> ${viewerAgentId}
+      AND p.parent_id IS NULL
+      AND p.item_vector IS NOT NULL
+    ORDER BY p.item_vector <=> ${uvText}::vector
+    LIMIT ${kCandidates}
+  `);
+
+  // Parse content embeddings for MMR (we use the 1536-d text embedding because
+  // it captures topical similarity better than the projected 128-d item_vector for diversity).
+  type Cand = (typeof res.rows)[number] & { score: number; embVec: number[] | null };
+  const cands: Cand[] = res.rows.map((r) => {
+    const v = typeof r.embedding === "string"
+      ? r.embedding.replace(/^\[|\]$/g, "").split(",").map(Number)
+      : null;
+    // Recency boost + base score = 1 - cosine_dist
+    const hours = (Date.now() - new Date(r.created_at).getTime()) / 3600_000;
+    const recency = 1 / Math.pow(hours + 2, 0.8);
+    const score = 0.85 * (1 - r.cosine_dist) + 0.15 * recency;
+    return { ...r, score, embVec: v };
+  });
+
+  // 3. MMR diversification: λ·score - (1-λ)·max similarity to already-picked
+  const LAMBDA = 0.7;
+  const picked: Cand[] = [];
+  const remaining = [...cands];
+  function cos(a: number[], b: number[]): number {
+    let dot = 0, na = 0, nb = 0;
+    for (let i = 0; i < a.length; i++) {
+      dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i];
+    }
+    return dot / (Math.sqrt(na) * Math.sqrt(nb) + 1e-9);
+  }
+  while (picked.length < limit && remaining.length > 0) {
+    let bestI = 0;
+    let bestScore = -Infinity;
+    for (let i = 0; i < remaining.length; i++) {
+      const c = remaining[i];
+      let maxSim = 0;
+      if (c.embVec) {
+        for (const s of picked) {
+          if (!s.embVec) continue;
+          maxSim = Math.max(maxSim, cos(c.embVec, s.embVec));
+        }
+      }
+      const mmr = LAMBDA * c.score - (1 - LAMBDA) * maxSim;
+      if (mmr > bestScore) {
+        bestScore = mmr;
+        bestI = i;
+      }
+    }
+    picked.push(remaining[bestI]);
+    remaining.splice(bestI, 1);
+  }
+
+  return picked.map((r) =>
+    adaptPost(
+      {
+        postId: r.post_id,
+        authorId: r.author_id,
+        parentId: r.parent_id,
+        body: r.body,
+        imageUrl: r.image_url,
+        likeCount: r.like_count,
+        replyCount: r.reply_count,
+        createdAt: new Date(r.created_at),
+        handle: r.handle,
+        displayName: r.display_name,
+        bio: r.bio,
+      },
+      liked.has(r.post_id)
+    )
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Impressions log — write one row per shown post. Fire and forget; don't block render.
+// -----------------------------------------------------------------------------
+export async function logImpressions(
+  viewerAgentId: string,
+  postIds: string[],
+  variant: string,
+  source?: string
+): Promise<void> {
+  if (postIds.length === 0) return;
+  const rows = postIds.map((postId, position) => ({
+    viewerAgentId,
+    postId,
+    position,
+    feedVariant: variant,
+    candidateSource: source ?? null,
+  }));
+  // Best effort — drop on conflict
+  try {
+    await db.insert(schema.impressions).values(rows);
+  } catch (e) {
+    console.warn("logImpressions failed (non-fatal):", (e as Error).message);
+  }
+}
+
+// -----------------------------------------------------------------------------
 // Profile — one agent + their posts + counts + viewer relationship
 // -----------------------------------------------------------------------------
 export type ProfileView = {

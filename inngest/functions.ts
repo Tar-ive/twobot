@@ -8,6 +8,8 @@ import { getRecentFeedForAgent, pickFollowTarget, pickPostFromFeed } from "../li
 import { chooseAction, type ActionKind } from "../lib/actions";
 import { embedOne, toPgvectorLiteral } from "../lib/openai";
 import { searchPhoto } from "../lib/unsplash";
+import { buildItemScalars, computeItemVector } from "../lib/twotower";
+import { clipEmbed } from "../lib/replicate";
 
 const { agents, posts, likes, follows, auditLog } = schema;
 
@@ -87,7 +89,7 @@ export const agentAct = inngest.createFunction(
       // 20% of posts include a photo (Unsplash search by topical query, derived
       // from one of the agent's interests for thematic match). Falls back to
       // Lorem Picsum on Unsplash error / no key.
-      const withPhoto = Math.random() < 0.2;
+      const withPhoto = Math.random() < 0.5;
       const postId = `post_${nanoid(12)}`;
 
       let imageUrl: string | null = null;
@@ -135,17 +137,36 @@ export const agentAct = inngest.createFunction(
         return { ok: false, reason: "empty_generation", action };
       }
 
-      // Embed body. Failure here shouldn't block the post; we log and skip embed.
+      // Embed body for retrieval + compute item_vector via two-tower for personalization.
+      // Failures are logged but don't block the post.
       let embeddingLit: string | null = null;
+      let itemVectorLit: string | null = null;
       try {
         const vec = await step.run("embed-post", () => embedOne(body));
         embeddingLit = toPgvectorLiteral(vec);
+        // Two-tower item vector (uses the just-computed body embedding + scalars)
+        const now = new Date();
+        const itemVec = await step.run("twotower-item", () =>
+          computeItemVector({
+            bodyEmbedding: vec,
+            scalars: buildItemScalars({ likeCount: 0, replyCount: 0, imageUrl, createdAt: now }, now),
+          })
+        );
+        itemVectorLit = toPgvectorLiteral(itemVec);
       } catch (e) {
-        logger.warn(`embed-post failed for @${agent.handle}: ${(e as Error).message}`);
+        logger.warn(`embed-post / item-vector failed for @${agent.handle}: ${(e as Error).message}`);
       }
 
+      // Note: CLIP image embedding is NOT done here (Replicate's free-tier rate
+      // limit would throttle us). The `embed-images-cron` function picks up
+      // un-embedded photo posts in the background, paced safely.
+
       await step.run("write-post", async () => {
-        if (embeddingLit) {
+        if (embeddingLit && itemVectorLit) {
+          await db.execute(
+            sql`INSERT INTO posts (post_id, author_id, body, image_url, embedding, item_vector) VALUES (${postId}, ${agent.agentId}, ${body}, ${imageUrl}, ${embeddingLit}::vector, ${itemVectorLit}::vector)`
+          );
+        } else if (embeddingLit) {
           await db.execute(
             sql`INSERT INTO posts (post_id, author_id, body, image_url, embedding) VALUES (${postId}, ${agent.agentId}, ${body}, ${imageUrl}, ${embeddingLit}::vector)`
           );
@@ -332,4 +353,57 @@ async function fallbackToPost(
   return { ok: true, action: "post", post_id: postId, body, fallback: true };
 }
 
-export const functions = [scheduleTick, agentAct];
+// embed-images-cron — paced background CLIP embedding for un-embedded photo posts.
+// Runs every 5 min, processes up to 25 images at 11s pacing (≈ Replicate's
+// 6 req/min free-tier ceiling). Each image stays well under our $0.001/image cost.
+export const embedImagesCron = inngest.createFunction(
+  { id: "embed-images-cron", name: "Embed un-embedded photos (paced)" },
+  { cron: process.env.EMBED_IMAGES_CRON ?? "*/5 * * * *" },
+  async ({ step, logger }) => {
+    const pending = await step.run("find-pending", async () => {
+      return await db
+        .select({ postId: posts.postId, imageUrl: posts.imageUrl })
+        .from(posts)
+        .where(sql`${posts.imageUrl} IS NOT NULL AND ${posts.imageEmbedding} IS NULL`)
+        .limit(25);
+    });
+
+    if (pending.length === 0) {
+      logger.info("embed-images-cron: nothing pending");
+      return { embedded: 0 };
+    }
+    logger.info(`embed-images-cron: ${pending.length} photos pending`);
+
+    let ok = 0, failed = 0;
+    for (const p of pending) {
+      const t0 = Date.now();
+      try {
+        const vec = await step.run(`clip-${p.postId}`, () => clipEmbed(p.imageUrl!));
+        if (vec.length === 768) {
+          await db.execute(
+            sql`UPDATE posts SET image_embedding = ${toPgvectorLiteral(vec)}::vector WHERE post_id = ${p.postId}`
+          );
+          ok++;
+        }
+      } catch (e) {
+        failed++;
+        const msg = (e as Error).message;
+        if (msg.includes("429") || msg.toLowerCase().includes("throttle")) {
+          // Give Replicate time to cool down then bail out for this tick
+          logger.warn("embed-images-cron: hit rate limit, ending this tick early");
+          await step.sleep("rl-cooldown", "30s");
+          break;
+        }
+      }
+      // Pace to ~11s between starts (sleep the remainder)
+      const elapsed = Date.now() - t0;
+      const wait = Math.max(0, 11_000 - elapsed);
+      if (wait > 0) await step.sleep(`pace-${p.postId}`, `${Math.ceil(wait / 1000)}s`);
+    }
+
+    logger.info(`embed-images-cron: embedded ${ok}, failed ${failed}`);
+    return { embedded: ok, failed };
+  }
+);
+
+export const functions = [scheduleTick, agentAct, embedImagesCron];

@@ -24,6 +24,8 @@ export const agents = pgTable(
     bio: text("bio"),
     avatarUrl: text("avatar_url"),
     persona: jsonb("persona").notNull(),
+    personaEmbedding: vector("persona_embedding", { dimensions: 1536 }),
+    userVector: vector("user_vector", { dimensions: 128 }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     isActive: boolean("is_active").default(true).notNull(),
     nextActionAt: timestamp("next_action_at", { withTimezone: true }),
@@ -56,6 +58,9 @@ export const posts = pgTable(
     body: text("body").notNull(),
     imageUrl: text("image_url"),
     embedding: vector("embedding", { dimensions: 1536 }),
+    imageEmbedding: vector("image_embedding", { dimensions: 768 }),
+    itemVector: vector("item_vector", { dimensions: 128 }),
+    clusterId: integer("cluster_id"),
     likeCount: integer("like_count").default(0).notNull(),
     replyCount: integer("reply_count").default(0).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -91,6 +96,40 @@ export const likes = pgTable(
   },
   (t) => [primaryKey({ columns: [t.agentId, t.postId] })]
 );
+
+// Impressions — every post shown in any feed, for measuring downstream engagement
+// and for skip/dwell-time signals. One row per (viewer, post, feed_render).
+export const impressions = pgTable(
+  "impressions",
+  {
+    id: bigserial("id", { mode: "bigint" }).primaryKey(),
+    viewerAgentId: text("viewer_agent_id").notNull().references(() => agents.agentId, { onDelete: "cascade" }),
+    postId: text("post_id").notNull().references(() => posts.postId, { onDelete: "cascade" }),
+    position: integer("position").notNull(),     // rank in the feed (0-indexed)
+    feedVariant: text("feed_variant").notNull(), // 'baseline' | 'twotower' | 'follow'
+    candidateSource: text("candidate_source"),
+    score: text("score"),                         // free-form, e.g. "0.7841"
+    shownAt: timestamp("shown_at", { withTimezone: true }).defaultNow().notNull(),
+    engagedAt: timestamp("engaged_at", { withTimezone: true }),
+    engagementKind: text("engagement_kind"),     // 'view' | 'like' | 'reply' | 'share' | 'skip' | 'not_interested'
+  },
+  (t) => [
+    index("impressions_viewer_shown_idx").on(t.viewerAgentId, t.shownAt),
+    index("impressions_post_idx").on(t.postId),
+    index("impressions_variant_idx").on(t.feedVariant),
+  ]
+);
+
+// Topic clusters — k-means centroids over post.embedding (text only),
+// with LLM-generated labels.
+export const topicClusters = pgTable("topic_clusters", {
+  clusterId: integer("cluster_id").primaryKey(),
+  label: text("label").notNull(),
+  description: text("description"),
+  centroid: vector("centroid", { dimensions: 1536 }),
+  size: integer("size").notNull().default(0),
+  computedAt: timestamp("computed_at", { withTimezone: true }).defaultNow().notNull(),
+});
 
 // Synthetic engagement labels — produced by MiniMax-as-judge for training the
 // two-tower recommender. Each row: "agent X would do Y about post Z."

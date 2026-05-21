@@ -1,0 +1,1 @@
+ALTER TABLE "agents" ADD COLUMN "persona_embedding" vector(1536);
