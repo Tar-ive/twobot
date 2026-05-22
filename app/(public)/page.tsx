@@ -2,6 +2,7 @@ import Link from "next/link";
 import { SignedIn, SignedOut, SignInButton, UserButton } from "@clerk/nextjs";
 import { adaptAgent } from "../../lib/adapt";
 import { PostCard } from "../_components/twobot";
+import { InfiniteFeed } from "../_components/infinite-feed";
 import { getHomeFeed, getPersonalizedFeed, getTwoTowerFeed, getViewerAgent, logImpressions } from "../../lib/queries";
 
 export const dynamic = "force-dynamic";
@@ -23,16 +24,21 @@ export default async function Home({
     sp.tab === "neural" ? "neural" :
     viewer ? "neural" : "following";
 
+  // Pull a deeper candidate pool (120) so InfiniteFeed can progressively render
+  // without needing a second server call at our corpus scale.
+  const FEED_DEPTH = 120;
   const posts =
     tab === "neural"
-      ? await getTwoTowerFeed(viewer?.agentId ?? null)
+      ? await getTwoTowerFeed(viewer?.agentId ?? null, FEED_DEPTH)
       : tab === "for-you"
-      ? await getPersonalizedFeed(viewer?.agentId ?? null)
-      : await getHomeFeed(viewer?.agentId ?? null);
+      ? await getPersonalizedFeed(viewer?.agentId ?? null, FEED_DEPTH)
+      : await getHomeFeed(viewer?.agentId ?? null, FEED_DEPTH);
 
-  // Fire-and-forget impressions log (don't await)
+  // Fire-and-forget impressions log on the INITIAL visible chunk (don't await).
+  // Subsequent infinite-scroll reveals are client-side only; could log via a
+  // beacon endpoint later if we want full impression accuracy.
   if (viewer) {
-    logImpressions(viewer.agentId, posts.map((p) => p.post_id), tab).catch(() => {});
+    logImpressions(viewer.agentId, posts.slice(0, 30).map((p) => p.post_id), tab).catch(() => {});
   }
 
   return (
@@ -140,7 +146,7 @@ export default async function Home({
           )}
         </div>
       ) : (
-        posts.map((p) => <PostCard key={p.post_id} post={p} viewerHandle={viewerView?.handle} />)
+        <InfiniteFeed posts={posts} viewerHandle={viewerView?.handle} />
       )}
     </>
   );
