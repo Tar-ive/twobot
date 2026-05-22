@@ -23,6 +23,12 @@ function parseVec(v: unknown): number[] | null {
 
 console.log("== Backfill user_vector + item_vector ==\n");
 
+// ---- FOLLOWER MAP ----
+const fc = (await db.execute<{ id: string; c: number }>(sql`
+  SELECT followee_id AS id, COUNT(*)::int AS c FROM follows GROUP BY followee_id
+`)).rows;
+const fcMap = new Map(fc.map((r) => [r.id, r.c]));
+
 // ---- USER VECTORS ----
 const FORCE_USERS = process.argv.includes("--force");
 const usersNeed = FORCE_USERS
@@ -31,10 +37,6 @@ const usersNeed = FORCE_USERS
 console.log(`users needing vectors: ${usersNeed.length} (force=${FORCE_USERS})`);
 
 if (usersNeed.length > 0) {
-  const fc = (await db.execute<{ id: string; c: number }>(sql`
-    SELECT followee_id AS id, COUNT(*)::int AS c FROM follows GROUP BY followee_id
-  `)).rows;
-  const fcMap = new Map(fc.map((r) => [r.id, r.c]));
 
   for (let i = 0; i < usersNeed.length; i += BATCH) {
     const slice = usersNeed.slice(i, i + BATCH);
@@ -65,6 +67,7 @@ const FORCE = process.argv.includes("--force");
 const postsQuery = FORCE
   ? db.select({
       postId: schema.posts.postId,
+      authorId: schema.posts.authorId,
       embedding: schema.posts.embedding,
       imageEmbedding: schema.posts.imageEmbedding,
       likeCount: schema.posts.likeCount,
@@ -74,6 +77,7 @@ const postsQuery = FORCE
     }).from(schema.posts)
   : db.select({
       postId: schema.posts.postId,
+      authorId: schema.posts.authorId,
       embedding: schema.posts.embedding,
       imageEmbedding: schema.posts.imageEmbedding,
       likeCount: schema.posts.likeCount,
@@ -97,7 +101,7 @@ if (postsNeed.length > 0) {
       return {
         bodyEmbedding: bodyEmb,
         imageEmbedding: imgEmb && imgEmb.length === 768 ? imgEmb : null,
-        scalars: buildItemScalars(p, now),
+        scalars: buildItemScalars(p, fcMap.get(p.authorId) ?? 0, now),
       };
     });
     const vecs = await computeItemVectorsBatch(inputs);

@@ -39,14 +39,25 @@ export function buildUserScalars(
 
 export function buildItemScalars(
   post: { likeCount: number; replyCount: number; imageUrl: string | null; createdAt: Date },
-  now: Date = new Date()
+  authorFollowerCountOrNow: number | Date = 0,
+  nowVal: Date = new Date()
 ): number[] {
-  const ageHours = (now.getTime() - post.createdAt.getTime()) / 3600_000;
+  let authorFollowerCount = 0;
+  let actualNow = nowVal;
+
+  if (authorFollowerCountOrNow instanceof Date) {
+    actualNow = authorFollowerCountOrNow;
+  } else if (typeof authorFollowerCountOrNow === "number") {
+    authorFollowerCount = authorFollowerCountOrNow;
+  }
+
+  const ageHours = (actualNow.getTime() - post.createdAt.getTime()) / 3600_000;
   return [
     Math.log1p(ageHours) / 8,
     Math.log1p(post.likeCount) / 4,
     Math.log1p(post.replyCount) / 3,
     post.imageUrl ? 1 : 0,
+    Math.log1p(authorFollowerCount) / 6,
   ];
 }
 

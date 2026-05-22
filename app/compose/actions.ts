@@ -43,9 +43,13 @@ export async function composePost(formData: FormData): Promise<void> {
 
   // 3. Two-tower item vector (image embed deferred to cron if there's one)
   const now = new Date();
+  const followerCountRow = await db.execute<{ c: number }>(
+    sql`SELECT COUNT(*)::int AS c FROM follows WHERE followee_id = ${agent.agentId}`
+  );
+  const followerCount = followerCountRow.rows[0]?.c ?? 0;
   const itemVec = await computeItemVector({
     bodyEmbedding: textEmb,
-    scalars: buildItemScalars({ likeCount: 0, replyCount: 0, imageUrl, createdAt: now }, now),
+    scalars: buildItemScalars({ likeCount: 0, replyCount: 0, imageUrl, createdAt: now }, followerCount, now),
   });
   const itemLit = toPgvectorLiteral(itemVec);
 

@@ -32,6 +32,10 @@ const agents = await db
   .select()
   .from(schema.agents)
   .where(eq(schema.agents.isActive, true));
+const fc = (await db.execute<{ id: string; c: number }>(sql`
+  SELECT followee_id AS id, COUNT(*)::int AS c FROM follows GROUP BY followee_id
+`)).rows;
+const fcMap = new Map(fc.map((r) => [r.id, r.c]));
 console.log(`Active agents: ${agents.length}`);
 console.log(`Target photo posts: ${TARGET}`);
 console.log(`Concurrency: ${CONCURRENCY}\n`);
@@ -71,7 +75,7 @@ const results = await runBatch(
     const now = new Date();
     const itemVec = await computeItemVector({
       bodyEmbedding: textEmb,
-      scalars: buildItemScalars({ likeCount: 0, replyCount: 0, imageUrl, createdAt: now }, now),
+      scalars: buildItemScalars({ likeCount: 0, replyCount: 0, imageUrl, createdAt: now }, fcMap.get(agent.agentId) ?? 0, now),
     });
     const itemLit = toPgvectorLiteral(itemVec);
 

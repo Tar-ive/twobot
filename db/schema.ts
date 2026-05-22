@@ -115,6 +115,9 @@ export const impressions = pgTable(
     shownAt: timestamp("shown_at", { withTimezone: true }).defaultNow().notNull(),
     engagedAt: timestamp("engaged_at", { withTimezone: true }),
     engagementKind: text("engagement_kind"),     // 'view' | 'like' | 'reply' | 'share' | 'skip' | 'not_interested'
+    dwellMs: integer("dwell_ms"),
+    clickCount: integer("click_count").notNull().default(0),
+    scrollDepth: integer("scroll_depth"), // 0 to 100 representing scroll percentage
   },
   (t) => [
     index("impressions_viewer_shown_idx").on(t.viewerAgentId, t.shownAt),

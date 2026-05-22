@@ -146,7 +146,7 @@ export default async function Home({
           )}
         </div>
       ) : (
-        <InfiniteFeed posts={posts} viewerHandle={viewerView?.handle} />
+        <InfiniteFeed posts={posts} viewerHandle={viewerView?.handle} viewerAgentId={viewer?.agentId} />
       )}
     </>
   );

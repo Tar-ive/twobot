@@ -42,15 +42,17 @@ class UserTower(nn.Module):
     def __init__(self, emb_dim, scalar_dim, hidden=256, out=128, dropout=0.2):
         super().__init__()
         self.fc1 = nn.Linear(emb_dim + scalar_dim, hidden)
+        self.ln1 = nn.LayerNorm(hidden)
         self.fc2 = nn.Linear(hidden, hidden)
+        self.ln2 = nn.LayerNorm(hidden)
         self.fc3 = nn.Linear(hidden, out)
         self.dropout = nn.Dropout(dropout)
         self.act = nn.GELU()
 
     def forward(self, emb, scalars):
         x = torch.cat([emb, scalars], dim=-1)
-        x = self.dropout(self.act(self.fc1(x)))
-        x = self.dropout(self.act(self.fc2(x)))
+        x = self.dropout(self.act(self.ln1(self.fc1(x))))
+        x = self.dropout(self.act(self.ln2(self.fc2(x))))
         return F.normalize(self.fc3(x), dim=-1)
 
 
@@ -61,7 +63,9 @@ class ItemTower(nn.Module):
         # Project image separately first (helps when 60%+ of items have zero image emb)
         self.image_proj = nn.Linear(image_dim, 128)
         self.fc1 = nn.Linear(text_dim + 128 + scalar_dim, hidden)
+        self.ln1 = nn.LayerNorm(hidden)
         self.fc2 = nn.Linear(hidden, hidden)
+        self.ln2 = nn.LayerNorm(hidden)
         self.fc3 = nn.Linear(hidden, out)
         self.dropout = nn.Dropout(dropout)
         self.act = nn.GELU()
@@ -69,8 +73,8 @@ class ItemTower(nn.Module):
     def forward(self, text_emb, image_emb, scalars):
         img_proj = self.act(self.image_proj(image_emb))
         x = torch.cat([text_emb, img_proj, scalars], dim=-1)
-        x = self.dropout(self.act(self.fc1(x)))
-        x = self.dropout(self.act(self.fc2(x)))
+        x = self.dropout(self.act(self.ln1(self.fc1(x))))
+        x = self.dropout(self.act(self.ln2(self.fc2(x))))
         return F.normalize(self.fc3(x), dim=-1)
 
 

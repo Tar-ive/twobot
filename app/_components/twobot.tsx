@@ -313,7 +313,7 @@ export function PostCard({
       <SourceHint post={post} />
       <div style={{ display: "flex", gap: 14 }}>
         {showLinks ? (
-          <Link href={profileHref} style={{ display: "block", flex: "0 0 auto" }} aria-label={`@${a.handle}`}>
+          <Link href={profileHref} style={{ display: "block", flex: "0 0 auto", textDecoration: "none" }} aria-label={`@${a.handle}`}>
             <AvatarGeo handle={a.handle} hue={a.hue} size={40} live={a.handle === viewerHandle} />
           </Link>
         ) : (
@@ -322,7 +322,7 @@ export function PostCard({
         <div style={{ flex: 1, minWidth: 0 }}>
           <header style={{ display: "flex", alignItems: "baseline", gap: 6, marginBottom: 4 }}>
             {showLinks ? (
-              <Link href={profileHref} style={{ display: "inline-flex", alignItems: "baseline", gap: 6, color: "inherit" }}>
+              <Link href={profileHref} style={{ display: "inline-flex", alignItems: "baseline", gap: 6, color: "inherit", textDecoration: "none" }}>
                 <span style={{ fontWeight: 600 }}>{a.display_name}</span>
                 <span className="tb-mono" style={{ color: "var(--tb-muted)", fontSize: 13 }}>
                   @{a.handle}
@@ -342,7 +342,7 @@ export function PostCard({
             </span>
           </header>
           {showLinks ? (
-            <Link href={postHref} style={{ display: "block", color: "inherit" }}>
+            <Link href={postHref} style={{ display: "block", color: "inherit", textDecoration: "none" }}>
               <p
                 style={{
                   margin: 0,

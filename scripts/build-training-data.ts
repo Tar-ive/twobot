@@ -24,6 +24,8 @@ const impressionLabels = await db
     agentId: schema.impressions.viewerAgentId,
     postId: schema.impressions.postId,
     action: schema.impressions.engagementKind,
+    dwellMs: schema.impressions.dwellMs,
+    clickCount: schema.impressions.clickCount,
   })
   .from(schema.impressions)
   .where(sql`${schema.impressions.engagementKind} IS NOT NULL`);
@@ -31,12 +33,18 @@ console.log(`impressions with engagement: ${impressionLabels.length}`);
 
 // Union, dedupe by (agent, post) preferring impressions (newer signal)
 const seen = new Set<string>();
-const allLabels: { agentId: string; postId: string; action: string }[] = [];
+const allLabels: { agentId: string; postId: string; action: string; dwellMs?: number; clickCount?: number }[] = [];
 for (const l of impressionLabels) {
   const k = `${l.agentId}::${l.postId}`;
   if (seen.has(k) || !l.action) continue;
   seen.add(k);
-  allLabels.push({ agentId: l.agentId, postId: l.postId, action: l.action.toUpperCase() });
+  allLabels.push({
+    agentId: l.agentId,
+    postId: l.postId,
+    action: l.action.toUpperCase(),
+    dwellMs: l.dwellMs ?? undefined,
+    clickCount: l.clickCount ?? undefined,
+  });
 }
 for (const l of syntheticLabels) {
   const k = `${l.agentId}::${l.postId}`;
@@ -71,6 +79,7 @@ const followerMap = new Map(fcRows.map((r) => [r.agent_id, r.c]));
 const itemRows = await db
   .select({
     postId: schema.posts.postId,
+    authorId: schema.posts.authorId,
     embedding: schema.posts.embedding,
     imageEmbedding: schema.posts.imageEmbedding,
     likeCount: schema.posts.likeCount,
@@ -127,25 +136,41 @@ for (const id of itemIds) {
   }
 
   const ageHours = (NOW - r.createdAt.getTime()) / 3600_000;
+  const authorFollowers = followerMap.get(r.authorId) ?? 0;
   item_scalars.push([
     Math.log1p(ageHours) / 8,
     Math.log1p(r.likeCount) / 4,
     Math.log1p(r.replyCount) / 3,
     r.imageUrl ? 1 : 0,
+    Math.log1p(authorFollowers) / 6,
   ]);
 }
 console.log(`items with CLIP image embedding: ${imagedCount}/${itemIds.length}`);
 
-const labelRows = allLabels.map((l) => ({
-  u: userIdx.get(l.agentId)!,
-  i: itemIdx.get(l.postId)!,
-  y: POSITIVE_ACTIONS.has(l.action) ? 1 : 0,
-  action: l.action,
-}));
+const labelRows = allLabels.map((l) => {
+  let y = 0.0;
+  if (POSITIVE_ACTIONS.has(l.action)) {
+    y = 1.0;
+  } else if (l.clickCount && l.clickCount > 0) {
+    y = 0.6;
+  } else if (l.dwellMs && l.dwellMs > 4000) {
+    y = 0.45;
+  } else if (l.dwellMs && l.dwellMs > 1500) {
+    y = 0.15;
+  }
 
-const pos = labelRows.filter((r) => r.y === 1).length;
-console.log(`positives: ${pos}, negatives: ${labelRows.length - pos}`);
-console.log(`pos rate: ${((pos / labelRows.length) * 100).toFixed(1)}%`);
+  return {
+    u: userIdx.get(l.agentId)!,
+    i: itemIdx.get(l.postId)!,
+    y,
+    action: l.action,
+  };
+});
+
+const pos = labelRows.filter((r) => r.y > 0).length;
+const sumY = labelRows.reduce((acc, r) => acc + r.y, 0);
+console.log(`positives (y > 0): ${pos}, pure positives (y=1): ${labelRows.filter((r) => r.y === 1).length}, negatives: ${labelRows.length - pos}`);
+console.log(`sum of soft targets y: ${sumY.toFixed(1)}, mean y: ${(sumY / labelRows.length).toFixed(3)}`);
 
 const output = {
   meta: {
@@ -156,7 +181,7 @@ const output = {
     item_text_dim: TEXT_DIM,
     item_image_dim: IMAGE_DIM,
     user_scalar_dim: 3,
-    item_scalar_dim: 4,
+    item_scalar_dim: 5,
     positive_rate: pos / labelRows.length,
   },
   user_ids: userIds,

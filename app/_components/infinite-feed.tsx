@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { PostCard, type PostView } from "./twobot";
+import { MeasuredCard } from "./measured-card";
 
 /**
  * Client-side progressive rendering. Server hands us the full ranked list;
@@ -16,6 +17,7 @@ import { PostCard, type PostView } from "./twobot";
 export function InfiniteFeed({
   posts,
   viewerHandle,
+  viewerAgentId,
   initialCount = 30,
   step = 20,
   compact = false,
@@ -24,6 +26,7 @@ export function InfiniteFeed({
 }: {
   posts: PostView[];
   viewerHandle?: string;
+  viewerAgentId?: string;
   initialCount?: number;
   step?: number;
   compact?: boolean;
@@ -67,7 +70,13 @@ export function InfiniteFeed({
         renderPost ? (
           <div key={p.post_id}>{renderPost(p)}</div>
         ) : (
-          <PostCard key={p.post_id} post={p} viewerHandle={viewerHandle} compact={compact} />
+          <MeasuredCard
+            key={p.post_id}
+            post={p}
+            viewerHandle={viewerHandle}
+            viewerAgentId={viewerAgentId}
+            compact={compact}
+          />
         )
       )}
 

@@ -1,0 +1,7 @@
+commit	val_auc	params_M	status	description
+8102e2c	0.6952	1.12	keep	baseline Two-Tower model
+0748e4a	0.6981	1.12	keep	add LayerNorm to UserTower and ItemTower
+-	0.6937	2.40	discard	increase hidden dimension to 512 (capacity)
+-	0.6969	1.12	discard	switch activation to SiLU (Swish)
+-	0.6950	1.12	discard	decrease dropout to 0.1
+-	0.6979	1.12	discard	CosineAnnealingLR scheduler
