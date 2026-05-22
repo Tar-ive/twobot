@@ -69,7 +69,7 @@ export async function pickAuthor(
   ).rows;
   if (candidates.length === 0) return null;
 
-  // 3. Pull this viewer's per-author exposure over the window
+  // 3a. Pull this viewer's per-author exposure over the window (impressions)
   const exposureRows = (
     await db.execute<{ author_id: string; c: number }>(sql`
       SELECT p.author_id, COUNT(*)::int AS c
@@ -82,6 +82,20 @@ export async function pickAuthor(
   ).rows;
   const exposureMap = new Map(exposureRows.map((r) => [r.author_id, r.c]));
   const totalExposure = exposureRows.reduce((s, r) => s + r.c, 0);
+
+  // 3b. Pull recent generations for this viewer (last 6h) so we cool down authors
+  // who just produced for them — impressions lag, this doesn't.
+  const recentGens = (
+    await db.execute<{ author_id: string; c: number }>(sql`
+      SELECT p.author_id, COUNT(*)::int AS c
+      FROM posts p
+      WHERE p.target_viewer_id = ${viewerId}
+        AND p.generation_source = 'targeted'
+        AND p.created_at > NOW() - INTERVAL '6 hours'
+      GROUP BY p.author_id
+    `)
+  ).rows;
+  const recentGenMap = new Map(recentGens.map((r) => [r.author_id, r.c]));
 
   // 4. Score each candidate
   type Scored = {
@@ -120,8 +134,12 @@ export async function pickAuthor(
     const capped = exposurePct >= MAX_AUTHOR_EXPOSURE_PCT;
     // Cluster fit: log-scale on how many posts the author has in this cluster
     const clusterFit = Math.min(1, Math.log1p(c.cluster_posts) / 2);
+    // Recent-generation penalty: -0.25 per post they generated for this viewer
+    // in the last 6 hours (compounds linearly so two recent = -0.5)
+    const recentGenCount = recentGenMap.get(c.agent_id) ?? 0;
+    const recentGenPenalty = 0.25 * recentGenCount;
     // Composite score
-    const score = 0.6 * sim + 0.3 * clusterFit - 0.4 * exposurePct;
+    const score = 0.6 * sim + 0.3 * clusterFit - 0.4 * exposurePct - recentGenPenalty;
     return {
       agentId: c.agent_id,
       handle: c.handle,

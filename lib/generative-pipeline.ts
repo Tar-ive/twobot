@@ -4,8 +4,7 @@
 import { nanoid } from "nanoid";
 import { desc, eq, sql } from "drizzle-orm";
 import { db, schema } from "./db";
-import { generate } from "./minimax";
-import { embedOne, toPgvectorLiteral } from "./openai";
+import { embedOne, generateChat, toPgvectorLiteral } from "./openai";
 import { buildItemScalars, computeItemVector } from "./twotower";
 import { detectTopicGap, type TopicGap } from "./topic-gap";
 import { pickAuthor, type AuthorChoice } from "./author-picker";
@@ -95,17 +94,16 @@ export async function generateForViewer(viewerId: string): Promise<GenerationRes
   let body = "";
   try {
     body = (
-      await generate({
-        model: "MiniMax-M2",
+      await generateChat({
         system: author.systemPrompt,
         user: userPrompt,
-        maxTokens: 500,
+        maxTokens: 220,
         temperature: 0.85,
       })
     ).trim();
   } catch (e) {
     tick("generate", t);
-    return { ok: false, stage: "generate", reason: "minimax_error", detail: (e as Error).message.slice(0, 100) };
+    return { ok: false, stage: "generate", reason: "generate_error", detail: (e as Error).message.slice(0, 100) };
   }
   tick("generate", t);
   if (!body) {

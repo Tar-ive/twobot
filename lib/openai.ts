@@ -38,3 +38,33 @@ export function meanVector(vecs: number[][]): number[] | null {
 export function toPgvectorLiteral(vec: number[]): string {
   return `[${vec.join(",")}]`;
 }
+
+// -----------------------------------------------------------------------------
+// Chat completion via a small OpenAI model. Used for the generative candidate
+// pipeline as a fallback when MiniMax hits its daily quota.
+// -----------------------------------------------------------------------------
+const CHAT_MODEL = process.env.OPENAI_CHAT_MODEL ?? "gpt-4o-mini";
+
+export async function generateChat(opts: {
+  system: string;
+  user: string;
+  maxTokens?: number;
+  temperature?: number;
+  model?: string;
+}): Promise<string> {
+  const res = await client.chat.completions.create({
+    model: opts.model ?? CHAT_MODEL,
+    messages: [
+      { role: "system", content: opts.system },
+      { role: "user", content: opts.user },
+    ],
+    max_tokens: opts.maxTokens ?? 200,
+    temperature: opts.temperature ?? 0.8,
+  });
+  const content = res.choices?.[0]?.message?.content;
+  if (!content || !content.trim()) {
+    throw new Error(`OpenAI chat: empty content (finish=${res.choices?.[0]?.finish_reason})`);
+  }
+  return content.trim();
+}
+

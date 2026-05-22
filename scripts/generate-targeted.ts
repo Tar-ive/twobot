@@ -29,6 +29,7 @@ let ok = 0, fail = 0;
 const failByReason: Record<string, number> = {};
 
 for (let i = 0; i < count; i++) {
+  if (i > 0) await new Promise((r) => setTimeout(r, 500)); // small pacing
   const t0 = Date.now();
   const result = await generateForViewer(viewer.agentId);
   const elapsed = Date.now() - t0;
