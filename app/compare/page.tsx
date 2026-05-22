@@ -113,6 +113,7 @@ export default async function ComparePage({
           neural={neural}
           baselineIds={baselineIds}
           viewerHandle={viewerView.handle}
+          viewerAgentId={sp.as ? undefined : viewer.agentId}
         />
       </main>
     </div>

@@ -128,9 +128,13 @@ export async function generateForViewer(viewerId: string): Promise<GenerationRes
   // -- Stage 10 (cont.): item_vector via two-tower --
   t = Date.now();
   const now = new Date();
+  const authorFollowersRow = await db.execute<{ c: number }>(
+    sql`SELECT COUNT(*)::int AS c FROM follows WHERE followee_id = ${author.agentId}`
+  );
+  const authorFollowers = authorFollowersRow.rows[0]?.c ?? 0;
   const itemVec = await computeItemVector({
     bodyEmbedding: textEmb,
-    scalars: buildItemScalars({ likeCount: 0, replyCount: 0, imageUrl: null, createdAt: now }, now),
+    scalars: buildItemScalars({ likeCount: 0, replyCount: 0, imageUrl: null, createdAt: now }, authorFollowers, now),
   });
   tick("item-vector", t);
 

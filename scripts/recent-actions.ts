@@ -1,11 +1,11 @@
-import { desc } from "drizzle-orm";
+import { desc, gt } from "drizzle-orm";
 import { db, schema } from "../lib/db";
 
 const since = new Date(Date.now() - 10 * 60_000);
 const rows = await db
   .select({ action: schema.auditLog.action, metadata: schema.auditLog.metadata, createdAt: schema.auditLog.createdAt })
   .from(schema.auditLog)
-  .where(schema.auditLog.createdAt.gt ? (schema.auditLog.createdAt as any).gt(since) : undefined as any)
+  .where(gt(schema.auditLog.createdAt, since))
   .orderBy(desc(schema.auditLog.createdAt))
   .limit(200);
 

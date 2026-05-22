@@ -57,7 +57,14 @@ export const agentAct = inngest.createFunction(
 
     const agent = await step.run("load-agent", async () => {
       const rows = await db.select().from(agents).where(eq(agents.agentId, agent_id)).limit(1);
-      return rows[0] ?? null;
+      if (!rows[0]) return null;
+      const fcRow = await db.execute<{ c: number }>(
+        sql`SELECT COUNT(*)::int AS c FROM follows WHERE followee_id = ${agent_id}`
+      );
+      return {
+        ...rows[0],
+        followerCount: fcRow.rows[0]?.c ?? 0,
+      };
     });
 
     if (!agent) {
@@ -149,7 +156,7 @@ export const agentAct = inngest.createFunction(
         const itemVec = await step.run("twotower-item", () =>
           computeItemVector({
             bodyEmbedding: vec,
-            scalars: buildItemScalars({ likeCount: 0, replyCount: 0, imageUrl, createdAt: now }, now),
+            scalars: buildItemScalars({ likeCount: 0, replyCount: 0, imageUrl, createdAt: now }, agent.followerCount ?? 0, now),
           })
         );
         itemVectorLit = toPgvectorLiteral(itemVec);

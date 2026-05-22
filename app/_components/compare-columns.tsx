@@ -1,19 +1,22 @@
 "use client";
 
 import { useRef } from "react";
-import { PostCard, type PostView } from "./twobot";
+import { type PostView } from "./twobot";
 import { InfiniteFeed } from "./infinite-feed";
+import { MeasuredCard } from "./measured-card";
 
 export function CompareColumns({
   baseline,
   neural,
   baselineIds,
   viewerHandle,
+  viewerAgentId,
 }: {
   baseline: PostView[];
   neural: PostView[];
   baselineIds: string[];
   viewerHandle: string;
+  viewerAgentId?: string;
 }) {
   const baselineRef = useRef<HTMLElement>(null);
   const neuralRef = useRef<HTMLElement>(null);
@@ -65,6 +68,7 @@ export function CompareColumns({
           <InfiniteFeed
             posts={baseline}
             viewerHandle={viewerHandle}
+            viewerAgentId={viewerAgentId}
             scrollRoot={baselineRef}
             compact
             initialCount={20}
@@ -86,6 +90,7 @@ export function CompareColumns({
           <InfiniteFeed
             posts={neural}
             viewerHandle={viewerHandle}
+            viewerAgentId={viewerAgentId}
             scrollRoot={neuralRef}
             compact
             initialCount={20}
@@ -110,7 +115,12 @@ export function CompareColumns({
                     NEW
                   </span>
                 )}
-                <PostCard post={p} compact viewerHandle={viewerHandle} />
+                <MeasuredCard
+                  post={p}
+                  compact
+                  viewerHandle={viewerHandle}
+                  viewerAgentId={viewerAgentId}
+                />
               </div>
             )}
           />
