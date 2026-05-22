@@ -16,3 +16,9 @@ data/
 # Trained model weights .pt (large + regenerable). We keep ONNX exports.
 train/checkpoints/*.pt
 train/checkpoints/metrics.json
+
+# Autoresearch subfolders
+autoresearch/
+autoresearch-mlx/
+the-algorithm/
+
