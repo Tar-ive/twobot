@@ -188,9 +188,11 @@ export async function getPersonalizedFeed(
 
 // -----------------------------------------------------------------------------
 // Two-tower feed — uses the trained neural model.
-// 1. Look up viewer's user_vector (precomputed).
-// 2. kNN over posts.item_vector (HNSW index, sub-ms).
-// 3. Apply light MMR for diversity over the top candidates.
+// Mixer architecture (analogous to Twitter's home-mixer candidate pipelines):
+//   - 70% organic kNN over item_vector
+//   - 15% targeted-for-this-viewer (generative candidate pipeline)
+//   - 15% exploration (cluster-novel content)
+// Then MMR diversity over the union.
 // -----------------------------------------------------------------------------
 export async function getTwoTowerFeed(viewerAgentId: string | null, limit = 40): Promise<PostView[]> {
   if (!viewerAgentId) return getHomeFeed(null, limit);
@@ -202,10 +204,15 @@ export async function getTwoTowerFeed(viewerAgentId: string | null, limit = 40):
   const uvText = u.rows[0]?.user_vector;
   if (!uvText) return getHomeFeed(viewerAgentId, limit);
 
-  // 2. kNN over item_vector. Pull ~3x what we need so MMR has room to diversify.
-  const kCandidates = limit * 3;
+  const targetedQuota = Math.floor(limit * 0.15);  // up to 6 of 40
+  const explorationQuota = Math.floor(limit * 0.15);
+  const organicQuota = limit - targetedQuota - explorationQuota;
+  const candidatePool = Math.max(limit * 3, 60); // total candidates pulled
+
   const liked = await getLikedSet(viewerAgentId);
-  const res = await db.execute<{
+
+  // ── Stream A: organic two-tower kNN ─────────────────────────────────────
+  const organicRes = await db.execute<{
     post_id: string;
     author_id: string;
     parent_id: string | null;
@@ -219,21 +226,141 @@ export async function getTwoTowerFeed(viewerAgentId: string | null, limit = 40):
     bio: string | null;
     cosine_dist: number;
     embedding: string | null;
+    cluster_id: number | null;
+    generation_source: string | null;
   }>(sql`
     SELECT
       p.post_id, p.author_id, p.parent_id, p.body, p.image_url,
       p.like_count, p.reply_count, p.created_at,
       a.handle, a.display_name, a.bio,
       (p.item_vector <=> ${uvText}::vector) AS cosine_dist,
-      p.embedding::text AS embedding
+      p.embedding::text AS embedding,
+      p.cluster_id,
+      p.generation_source
     FROM posts p
     INNER JOIN agents a ON a.agent_id = p.author_id
     WHERE p.author_id <> ${viewerAgentId}
       AND p.parent_id IS NULL
       AND p.item_vector IS NOT NULL
+      AND (p.target_viewer_id IS NULL OR p.target_viewer_id = ${viewerAgentId})
     ORDER BY p.item_vector <=> ${uvText}::vector
-    LIMIT ${kCandidates}
+    LIMIT ${candidatePool}
   `);
+
+  // ── Stream B: targeted-for-this-viewer (fresh, last 24h) ────────────────
+  const targetedRes = await db.execute<{
+    post_id: string;
+    author_id: string;
+    parent_id: string | null;
+    body: string;
+    image_url: string | null;
+    like_count: number;
+    reply_count: number;
+    created_at: Date;
+    handle: string;
+    display_name: string;
+    bio: string | null;
+    cosine_dist: number;
+    embedding: string | null;
+    cluster_id: number | null;
+    generation_source: string | null;
+  }>(sql`
+    SELECT
+      p.post_id, p.author_id, p.parent_id, p.body, p.image_url,
+      p.like_count, p.reply_count, p.created_at,
+      a.handle, a.display_name, a.bio,
+      (p.item_vector <=> ${uvText}::vector) AS cosine_dist,
+      p.embedding::text AS embedding,
+      p.cluster_id,
+      p.generation_source
+    FROM posts p
+    INNER JOIN agents a ON a.agent_id = p.author_id
+    WHERE p.target_viewer_id = ${viewerAgentId}
+      AND p.generation_source = 'targeted'
+      AND p.parent_id IS NULL
+      AND p.item_vector IS NOT NULL
+      AND p.created_at > NOW() - INTERVAL '24 hours'
+    ORDER BY p.created_at DESC
+    LIMIT ${targetedQuota * 2}
+  `);
+
+  // ── Stream C: exploration (clusters this viewer has NOT engaged with) ───
+  // Find viewer's top-3 most-engaged clusters from recent impressions
+  const topEngagedClusters = await db.execute<{ cluster_id: number }>(sql`
+    SELECT p.cluster_id
+    FROM impressions i
+    INNER JOIN posts p ON p.post_id = i.post_id
+    WHERE i.viewer_agent_id = ${viewerAgentId}
+      AND i.engagement_kind IN ('like','reply','share','LIKE','REPLY','SHARE')
+      AND p.cluster_id IS NOT NULL
+    GROUP BY p.cluster_id
+    ORDER BY COUNT(*) DESC
+    LIMIT 3
+  `);
+  const topClusterIds = topEngagedClusters.rows.map((r) => r.cluster_id);
+
+  const explorationRes = topClusterIds.length > 0
+    ? await db.execute<{
+        post_id: string;
+        author_id: string;
+        parent_id: string | null;
+        body: string;
+        image_url: string | null;
+        like_count: number;
+        reply_count: number;
+        created_at: Date;
+        handle: string;
+        display_name: string;
+        bio: string | null;
+        cosine_dist: number;
+        embedding: string | null;
+        cluster_id: number | null;
+        generation_source: string | null;
+      }>(sql`
+        SELECT
+          p.post_id, p.author_id, p.parent_id, p.body, p.image_url,
+          p.like_count, p.reply_count, p.created_at,
+          a.handle, a.display_name, a.bio,
+          (p.item_vector <=> ${uvText}::vector) AS cosine_dist,
+          p.embedding::text AS embedding,
+          p.cluster_id,
+          p.generation_source
+        FROM posts p
+        INNER JOIN agents a ON a.agent_id = p.author_id
+        WHERE p.author_id <> ${viewerAgentId}
+          AND p.parent_id IS NULL
+          AND p.item_vector IS NOT NULL
+          AND p.cluster_id IS NOT NULL
+          AND p.cluster_id NOT IN (${sql.join(topClusterIds.map((c) => sql`${c}`), sql`, `)})
+          AND (p.target_viewer_id IS NULL OR p.target_viewer_id = ${viewerAgentId})
+        ORDER BY p.item_vector <=> ${uvText}::vector
+        LIMIT ${explorationQuota * 2}
+      `)
+    : { rows: [] as any[] };
+
+  // ── Merge streams with dedupe + quota enforcement ───────────────────────
+  type Row = (typeof organicRes.rows)[number];
+  const seen = new Set<string>();
+  const targetedRows: Row[] = [];
+  for (const r of targetedRes.rows) {
+    if (seen.has(r.post_id) || targetedRows.length >= targetedQuota) continue;
+    seen.add(r.post_id);
+    targetedRows.push(r);
+  }
+  const explorationRows: Row[] = [];
+  for (const r of explorationRes.rows) {
+    if (seen.has(r.post_id) || explorationRows.length >= explorationQuota) continue;
+    seen.add(r.post_id);
+    explorationRows.push(r);
+  }
+  const organicRows: Row[] = [];
+  for (const r of organicRes.rows) {
+    if (seen.has(r.post_id) || organicRows.length >= organicQuota) continue;
+    seen.add(r.post_id);
+    organicRows.push(r);
+  }
+  const allRows = [...organicRows, ...targetedRows, ...explorationRows];
+  const res = { rows: allRows };
 
   // Parse content embeddings for MMR (we use the 1536-d text embedding because
   // it captures topical similarity better than the projected 128-d item_vector for diversity).
@@ -282,8 +409,12 @@ export async function getTwoTowerFeed(viewerAgentId: string | null, limit = 40):
     remaining.splice(bestI, 1);
   }
 
-  return picked.map((r) =>
-    adaptPost(
+  const explorationIds = new Set(explorationRows.map((x) => x.post_id));
+  return picked.map((r) => {
+    const source: "targeted" | "exploration" | undefined =
+      r.generation_source === "targeted" ? "targeted" :
+      explorationIds.has(r.post_id) ? "exploration" : undefined;
+    return adaptPost(
       {
         postId: r.post_id,
         authorId: r.author_id,
@@ -297,9 +428,10 @@ export async function getTwoTowerFeed(viewerAgentId: string | null, limit = 40):
         displayName: r.display_name,
         bio: r.bio,
       },
-      liked.has(r.post_id)
-    )
-  );
+      liked.has(r.post_id),
+      source
+    );
+  });
 }
 
 // -----------------------------------------------------------------------------

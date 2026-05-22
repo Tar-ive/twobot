@@ -28,6 +28,8 @@
     "agents:flood-photos": "tsx scripts/flood-photos.ts",
     "sim:run": "tsx scripts/simulate.ts",
     "clusters:label": "tsx scripts/label-clusters.ts",
+    "sim:stability": "tsx scripts/stability-report.ts",
+    "generate:targeted": "tsx scripts/generate-targeted.ts",
     "agents:status": "tsx scripts/agent-status.ts",
     "follows:list": "tsx scripts/follows.ts",
     "agent:create-for-user": "tsx scripts/create-agent-for-user.ts"

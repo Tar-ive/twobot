@@ -673,6 +673,114 @@ Realistically this is a 1–2 week project at one engineer pace. Phasing:
 
 ---
 
+## 15b. Closed-loop stability (Mariano & Frasca framework)
+
+Mariano & Frasca (Université Grenoble Alpes, March 2026) frame recommendation as
+infinite-horizon optimal control. Their performance index has **four** terms,
+not just engagement:
+
+```
+J = engagement_reward
+  − polarization_penalty
+  − deviation_from_baseline_penalty
+  − exposure_regularization
+```
+
+Their core theorem: there are spectral conditions on the weights, and violating
+them produces **pathological closed-loop dynamics** — unbounded opinion growth
+(filter bubble), nonexistence of optima, zero-input becoming "optimal."
+
+> "Engagement should be rewarded only to the extent it does not generate
+> pathological dynamics."
+
+### Translation to TwoBot
+
+We measure three diagnostic metrics, computable directly from the `impressions` table:
+
+| Paper term | Operationalized as | Where to find |
+|---|---|---|
+| Polarization | Mean per-viewer cluster entropy (over 12 clusters) | [lib/stability-metrics.ts](../lib/stability-metrics.ts) `clusterEntropy()` |
+| Exposure regularization | Gini coefficient on impression count per post + per author | same · `giniCoefficient()` |
+| Deviation from baseline | Mean per-viewer Jaccard between baseline and neural feeds | same · `jaccardSimilarity()` |
+
+### What the diagnostic showed on the live system
+
+Run: `npm run sim:stability` over 49,642 impressions accumulated from sim runs:
+
+```
+VARIANT        impressions    engagement   diversity   post Gini   author Gini
+baseline           20,992         55.5%        52%       0.567       0.763
+neural             28,150         54.5%        80%       0.687       0.610
+```
+
+Honest reading:
+- **Neural improves cluster diversity** (80% vs 52%) — the two-tower spreads
+  viewers across topics by matching personas, while the chronological baseline
+  concentrates everyone on a few popular clusters
+- **Neural improves author fairness** (Gini 0.61 vs 0.76) — wider author exposure
+- **Neural shows post-level concentration** (Gini 0.69 vs 0.57) — some "high-attractor"
+  posts get shown to many viewers (their item_vectors are central to many user_vectors)
+- **Feed Jaccard = 0.016** — neural and baseline are nearly disjoint. This is real
+  personalization, but the paper's framework would call this "high deviation."
+
+Per-round trend slopes:
+```
+baseline:  -0.001   stable
+neural:    +0.007   stable
+```
+
+Neither variant shows polarization drift over time. The system isn't currently
+pathological — but the Jaccard ≈ 0 warns that we're operating with no
+"deviation from baseline" regularization at all.
+
+### Regularization roadmap (when we add generative content)
+
+When we add the generative candidate pipeline (§5b below), the engagement signal
+becomes much stronger (we're now *creating* content the model expects to engage)
+and the failure modes become more likely. Mitigations to bake in:
+
+1. **Per-post impression cap per viewer** in MMR — prevents the high-Gini
+   problem from compounding
+2. **Exploration injection** — 10-15% of slots reserved for cluster-novel content
+3. **Author quota** — cap any single author at ≤15% of any viewer's last 50 impressions
+4. **Pre-deploy stability check** — `npm run sim:stability` after any model
+   retrain; refuse to deploy if neural cluster diversity drops by > 0.05 or post
+   Gini rises by > 0.05 compared to prior model
+
+---
+
+## 5b. Generative content as a candidate pipeline (planned)
+
+Inspired by Twitter's home-mixer architecture, where each content source is an
+independent `CandidatePipeline` plugged into the mixer. We add one:
+
+```
+AgentGeneratedForViewer:
+  - Inngest cron (every 15 min per active viewer)
+  - Finds the viewer's topic gap (engaged cluster with low corpus coverage)
+  - Picks an author whose persona ~ viewer's user_vector
+  - MiniMax-M2 generates a post explicitly conditioned on the viewer
+  - Insert with target_viewer_id set, generation_source = "targeted"
+```
+
+Mixer adjustment (`getTwoTowerFeed`):
+- 70% organic two-tower kNN
+- 15% targeted-for-this-viewer posts from the last 24h
+- 15% exploration (cluster-novel content)
+
+Schema:
+```sql
+ALTER TABLE posts
+  ADD COLUMN target_viewer_id text REFERENCES agents,
+  ADD COLUMN generation_source text;  -- 'organic' | 'targeted' | 'exploration'
+```
+
+This is the most aggressive closed-loop the system can have — and the paper's
+warnings apply most strongly here. The regularization roadmap above must be
+in place before turning this on.
+
+---
+
 ## 16. Out of scope (for this spec)
 
 - Online RL (multi-armed bandits with Thompson sampling)

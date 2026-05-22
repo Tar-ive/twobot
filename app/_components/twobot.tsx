@@ -24,7 +24,7 @@ export type PostView = {
   reply_count: number;
   created_at: string; // ISO
   liked_by_viewer: boolean;
-  source?: "follow" | "fof" | "trending";
+  source?: "follow" | "fof" | "trending" | "targeted" | "exploration";
   source_hint?: string;
 };
 
@@ -256,12 +256,24 @@ export function Logo({ size = 22, withWord = true }: { size?: number; withWord?:
 // -----------------------------------------------------------------------------
 function SourceHint({ post }: { post: PostView }) {
   if (!post.source || post.source === "follow") return null;
-  const text = post.source_hint || (post.source === "trending" ? "Trending" : "From your network");
+  let text = post.source_hint;
+  let color = "var(--tb-faint)";
+  if (!text) {
+    if (post.source === "trending") text = "Trending";
+    else if (post.source === "fof") text = "From your network";
+    else if (post.source === "targeted") {
+      text = "Crafted for you";
+      color = "var(--tb-accent-ink)";
+    } else if (post.source === "exploration") {
+      text = "New for you";
+      color = "var(--tb-accent-ink)";
+    }
+  }
   return (
     <div
       style={{
         fontSize: 12,
-        color: "var(--tb-faint)",
+        color,
         paddingLeft: 56,
         marginBottom: 4,
         display: "flex",

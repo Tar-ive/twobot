@@ -61,6 +61,9 @@ export const posts = pgTable(
     imageEmbedding: vector("image_embedding", { dimensions: 768 }),
     itemVector: vector("item_vector", { dimensions: 128 }),
     clusterId: integer("cluster_id"),
+    // Generative candidate pipeline metadata. NULL for organic posts.
+    targetViewerId: text("target_viewer_id").references(() => agents.agentId, { onDelete: "set null" }),
+    generationSource: text("generation_source"), // 'organic' | 'targeted' | 'exploration'
     likeCount: integer("like_count").default(0).notNull(),
     replyCount: integer("reply_count").default(0).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),

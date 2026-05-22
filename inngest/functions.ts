@@ -406,4 +406,74 @@ export const embedImagesCron = inngest.createFunction(
   }
 );
 
-export const functions = [scheduleTick, agentAct, embedImagesCron];
+// generate-targeted-cron — periodically generates personalized content for
+// active viewers via the generative candidate pipeline.
+// Runs every 30 min by default; processes up to 5 viewers per tick.
+// Paced to respect MiniMax RPM (~6 RPM at our tier).
+export const generateTargetedCron = inngest.createFunction(
+  { id: "generate-targeted-cron", name: "Generative candidate pipeline (paced)" },
+  { cron: process.env.GENERATE_TARGETED_CRON ?? "*/30 * * * *" },
+  async ({ step, logger }) => {
+    const { generateForViewer } = await import("../lib/generative-pipeline");
+
+    // 1. Pick active viewers with recent activity (last 6 hours)
+    const candidates = await step.run("pick-viewers", async () => {
+      return (
+        await db.execute<{ agent_id: string; handle: string }>(sql`
+          SELECT DISTINCT a.agent_id, a.handle
+          FROM agents a
+          INNER JOIN impressions i ON i.viewer_agent_id = a.agent_id
+          WHERE a.is_active = true
+            AND i.shown_at > NOW() - INTERVAL '6 hours'
+            AND a.persona_embedding IS NOT NULL
+          LIMIT 5
+        `)
+      ).rows;
+    });
+
+    if (candidates.length === 0) {
+      logger.info("generate-targeted-cron: no eligible viewers");
+      return { generated: 0, attempted: 0 };
+    }
+    logger.info(`generate-targeted-cron: ${candidates.length} viewer(s) eligible`);
+
+    let ok = 0;
+    let fail = 0;
+    const failReasons: Record<string, number> = {};
+
+    for (const viewer of candidates) {
+      const t0 = Date.now();
+      try {
+        const result = await step.run(`gen-${viewer.agent_id}`, () => generateForViewer(viewer.agent_id));
+        if (result.ok) {
+          ok++;
+          logger.info(
+            `✓ @${viewer.handle}: post_id=${result.postId} by @${result.author.handle} in cluster "${result.gap.label}" (${result.gap.mode})`
+          );
+        } else {
+          fail++;
+          failReasons[result.reason] = (failReasons[result.reason] ?? 0) + 1;
+          logger.info(`✗ @${viewer.handle}: ${result.stage}/${result.reason} ${result.detail ?? ""}`);
+          if (result.reason === "minimax_error" || result.reason === "empty_output") {
+            // Likely rate limit / usage cap → bail out, try again next tick
+            logger.warn("generate-targeted-cron: ending tick early due to MiniMax error");
+            await step.sleep("minimax-cooldown", "30s");
+            break;
+          }
+        }
+      } catch (e) {
+        fail++;
+        logger.warn(`✗ @${viewer.handle}: exception ${(e as Error).message.slice(0, 100)}`);
+      }
+      // Pace ~12s between MiniMax calls to respect RPM
+      const elapsed = Date.now() - t0;
+      const wait = Math.max(0, 12_000 - elapsed);
+      if (wait > 0) await step.sleep(`pace-${viewer.agent_id}`, `${Math.ceil(wait / 1000)}s`);
+    }
+
+    logger.info(`generate-targeted-cron: ok=${ok} fail=${fail} reasons=${JSON.stringify(failReasons)}`);
+    return { generated: ok, attempted: candidates.length, failReasons };
+  }
+);
+
+export const functions = [scheduleTick, agentAct, embedImagesCron, generateTargetedCron];

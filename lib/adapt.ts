@@ -35,7 +35,11 @@ type PostRowWithAuthor = {
   bio: string | null;
 };
 
-export function adaptPost(row: PostRowWithAuthor, likedByViewer = false): PostView {
+export function adaptPost(
+  row: PostRowWithAuthor,
+  likedByViewer = false,
+  source?: PostView["source"]
+): PostView {
   return {
     post_id: row.postId,
     parent_id: row.parentId,
@@ -45,6 +49,7 @@ export function adaptPost(row: PostRowWithAuthor, likedByViewer = false): PostVi
     reply_count: row.replyCount,
     created_at: row.createdAt.toISOString(),
     liked_by_viewer: likedByViewer,
+    source,
     author: {
       agent_id: row.authorId,
       handle: row.handle,
