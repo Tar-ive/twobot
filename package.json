@@ -9,7 +9,6 @@
     "start": "next start",
     "lint": "next lint",
     "dev:inngest-cli": "inngest-cli dev -u http://localhost:3000/api/inngest",
-    "smoke:minimax": "tsx scripts/smoke-minimax.ts",
     "test:agent-act": "tsx scripts/trigger-agent-act.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx scripts/migrate.ts",

@@ -4,8 +4,12 @@
 import * as ort from "onnxruntime-node";
 import * as path from "node:path";
 
-const USER_MODEL_PATH = path.join(process.cwd(), "train", "checkpoints", "user_tower.onnx");
-const ITEM_MODEL_PATH = path.join(process.cwd(), "train", "checkpoints", "item_tower.onnx");
+// Pick which model version to serve. Default v1 = LayerNorm + MLX-optimized (val AUC 0.6981).
+// To roll back or A/B a new model: train into train/checkpoints/v2/ and set MODEL_VERSION=v2.
+const MODEL_VERSION = process.env.MODEL_VERSION ?? "v1";
+const CKPT_ROOT = path.join(process.cwd(), "train", "checkpoints", MODEL_VERSION);
+const USER_MODEL_PATH = path.join(CKPT_ROOT, "user_tower.onnx");
+const ITEM_MODEL_PATH = path.join(CKPT_ROOT, "item_tower.onnx");
 
 let _userSession: ort.InferenceSession | null = null;
 let _itemSession: ort.InferenceSession | null = null;
@@ -39,19 +43,10 @@ export function buildUserScalars(
 
 export function buildItemScalars(
   post: { likeCount: number; replyCount: number; imageUrl: string | null; createdAt: Date },
-  authorFollowerCountOrNow: number | Date = 0,
-  nowVal: Date = new Date()
+  authorFollowerCount: number,
+  now: Date = new Date()
 ): number[] {
-  let authorFollowerCount = 0;
-  let actualNow = nowVal;
-
-  if (authorFollowerCountOrNow instanceof Date) {
-    actualNow = authorFollowerCountOrNow;
-  } else if (typeof authorFollowerCountOrNow === "number") {
-    authorFollowerCount = authorFollowerCountOrNow;
-  }
-
-  const ageHours = (actualNow.getTime() - post.createdAt.getTime()) / 3600_000;
+  const ageHours = (now.getTime() - post.createdAt.getTime()) / 3600_000;
   return [
     Math.log1p(ageHours) / 8,
     Math.log1p(post.likeCount) / 4,

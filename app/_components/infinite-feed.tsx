@@ -18,6 +18,7 @@ export function InfiniteFeed({
   posts,
   viewerHandle,
   viewerAgentId,
+  feedVariant,
   initialCount = 30,
   step = 20,
   compact = false,
@@ -27,13 +28,15 @@ export function InfiniteFeed({
   posts: PostView[];
   viewerHandle?: string;
   viewerAgentId?: string;
+  /** Feed variant tag for impression telemetry. */
+  feedVariant?: string;
   initialCount?: number;
   step?: number;
   compact?: boolean;
   /** Optional ref to a scrollable parent. If omitted, uses viewport. */
   scrollRoot?: React.RefObject<HTMLElement | null>;
-  /** Optional custom renderer (used by /compare to add NEW badges). */
-  renderPost?: (post: PostView) => React.ReactNode;
+  /** Optional custom renderer (used by /compare to add NEW badges). Receives position. */
+  renderPost?: (post: PostView, position: number) => React.ReactNode;
 }) {
   const [visible, setVisible] = useState(initialCount);
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -66,15 +69,17 @@ export function InfiniteFeed({
 
   return (
     <>
-      {posts.slice(0, visible).map((p) =>
+      {posts.slice(0, visible).map((p, idx) =>
         renderPost ? (
-          <div key={p.post_id}>{renderPost(p)}</div>
+          <div key={p.post_id}>{renderPost(p, idx)}</div>
         ) : (
           <MeasuredCard
             key={p.post_id}
             post={p}
             viewerHandle={viewerHandle}
             viewerAgentId={viewerAgentId}
+            feedVariant={feedVariant}
+            position={idx}
             compact={compact}
           />
         )

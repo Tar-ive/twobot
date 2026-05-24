@@ -6,7 +6,6 @@ import { currentUser } from "@clerk/nextjs/server";
 import { db, schema } from "./db";
 import { adaptAgent, adaptPost } from "./adapt";
 import { hueFromHandle, type AgentView, type PostView } from "../app/_components/twobot";
-import { meanVector, toPgvectorLiteral } from "./openai";
 
 const { agents, posts, likes, follows, auditLog, agentApiKeys } = schema;
 
@@ -89,102 +88,8 @@ export async function getHomeFeed(viewerAgentId: string | null, limit = 40): Pro
   return rows.map((r) => adaptPost(r, liked.has(r.postId)));
 }
 
-// -----------------------------------------------------------------------------
-// "For You" — personalized feed via cosine similarity to viewer's preference vector.
-// Preference vector = mean of embeddings of recently-liked posts (last 30).
-// Falls back to recency-based home feed if viewer has no likes or no embeddings exist.
-//
-// Ranking signal:
-//   score = α·(1 - cosine_distance) + β·source_boost + γ·recency_decay + δ·engagement
-// We blend the similarity term into the existing 70/20/10 sourcing.
-// -----------------------------------------------------------------------------
-export async function getPersonalizedFeed(
-  viewerAgentId: string | null,
-  limit = 40
-): Promise<PostView[]> {
-  if (!viewerAgentId) return getHomeFeed(null, limit);
-
-  // 1. Build preference vector from the last 30 posts the viewer liked or replied to.
-  const liked = await db
-    .select({ embedding: posts.embedding })
-    .from(likes)
-    .innerJoin(posts, eq(likes.postId, posts.postId))
-    .where(eq(likes.agentId, viewerAgentId))
-    .orderBy(desc(likes.createdAt))
-    .limit(30);
-
-  const replied = await db
-    .select({ embedding: posts.embedding })
-    .from(posts)
-    .where(and(eq(posts.authorId, viewerAgentId), sql`${posts.parentId} IS NOT NULL`))
-    .orderBy(desc(posts.createdAt))
-    .limit(30);
-
-  const vecs = [...liked, ...replied]
-    .map((r) => r.embedding as unknown as number[] | null)
-    .filter((v): v is number[] => Array.isArray(v) && v.length > 0);
-
-  const prefVec = meanVector(vecs);
-  if (!prefVec) {
-    // Cold start: no signal yet, fall back to follow-graph feed
-    return getHomeFeed(viewerAgentId, limit);
-  }
-  const prefLit = toPgvectorLiteral(prefVec);
-
-  // 2. Ranked similarity query.
-  // Exclude: self-authored, replies, already-liked posts.
-  const likedSet = await getLikedSet(viewerAgentId);
-  const result = await db.execute<{
-    post_id: string;
-    author_id: string;
-    parent_id: string | null;
-    body: string;
-    image_url: string | null;
-    like_count: number;
-    reply_count: number;
-    created_at: Date;
-    handle: string;
-    display_name: string;
-    bio: string | null;
-    score: number;
-  }>(sql`
-    SELECT
-      p.post_id, p.author_id, p.parent_id, p.body, p.image_url,
-      p.like_count, p.reply_count, p.created_at,
-      a.handle, a.display_name, a.bio,
-      (
-        0.6 * (1 - (p.embedding <=> ${prefLit}::vector))
-        + 0.25 * (1 / power(extract(epoch from now() - p.created_at)/3600 + 2, 1.2))
-        + 0.15 * (log(1 + p.like_count + 2 * p.reply_count) / 6)
-      ) AS score
-    FROM posts p
-    INNER JOIN agents a ON a.agent_id = p.author_id
-    WHERE p.author_id <> ${viewerAgentId}
-      AND p.parent_id IS NULL
-      AND p.embedding IS NOT NULL
-    ORDER BY score DESC
-    LIMIT ${limit}
-  `);
-
-  return result.rows.map((r) =>
-    adaptPost(
-      {
-        postId: r.post_id,
-        authorId: r.author_id,
-        parentId: r.parent_id,
-        body: r.body,
-        imageUrl: r.image_url,
-        likeCount: r.like_count,
-        replyCount: r.reply_count,
-        createdAt: new Date(r.created_at),
-        handle: r.handle,
-        displayName: r.display_name,
-        bio: r.bio,
-      },
-      likedSet.has(r.post_id)
-    )
-  );
-}
+// (removed) getPersonalizedFeed: pre-neural cosine-on-mean-of-likes heuristic.
+// Superseded by getTwoTowerFeed below.
 
 // -----------------------------------------------------------------------------
 // Two-tower feed — uses the trained neural model.
@@ -434,30 +339,8 @@ export async function getTwoTowerFeed(viewerAgentId: string | null, limit = 40):
   });
 }
 
-// -----------------------------------------------------------------------------
-// Impressions log — write one row per shown post. Fire and forget; don't block render.
-// -----------------------------------------------------------------------------
-export async function logImpressions(
-  viewerAgentId: string,
-  postIds: string[],
-  variant: string,
-  source?: string
-): Promise<void> {
-  if (postIds.length === 0) return;
-  const rows = postIds.map((postId, position) => ({
-    viewerAgentId,
-    postId,
-    position,
-    feedVariant: variant,
-    candidateSource: source ?? null,
-  }));
-  // Best effort — drop on conflict
-  try {
-    await db.insert(schema.impressions).values(rows);
-  } catch (e) {
-    console.warn("logImpressions failed (non-fatal):", (e as Error).message);
-  }
-}
+// (removed) logImpressions: impressions are now written client-side via the
+// MeasuredCard → /api/telemetry beacon path. Single source of truth.
 
 // -----------------------------------------------------------------------------
 // Profile — one agent + their posts + counts + viewer relationship

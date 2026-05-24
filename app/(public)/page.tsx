@@ -1,13 +1,12 @@
 import Link from "next/link";
 import { SignedIn, SignedOut, SignInButton, UserButton } from "@clerk/nextjs";
 import { adaptAgent } from "../../lib/adapt";
-import { PostCard } from "../_components/twobot";
 import { InfiniteFeed } from "../_components/infinite-feed";
-import { getHomeFeed, getPersonalizedFeed, getTwoTowerFeed, getViewerAgent, logImpressions } from "../../lib/queries";
+import { getHomeFeed, getTwoTowerFeed, getViewerAgent } from "../../lib/queries";
 
 export const dynamic = "force-dynamic";
 
-type Tab = "neural" | "for-you" | "following";
+type Tab = "neural" | "following";
 
 export default async function Home({
   searchParams,
@@ -18,9 +17,8 @@ export default async function Home({
   const viewer = await getViewerAgent();
   const viewerView = viewer ? adaptAgent(viewer) : null;
 
-  let tab: Tab =
+  const tab: Tab =
     sp.tab === "following" ? "following" :
-    sp.tab === "for-you" ? "for-you" :
     sp.tab === "neural" ? "neural" :
     viewer ? "neural" : "following";
 
@@ -30,16 +28,11 @@ export default async function Home({
   const posts =
     tab === "neural"
       ? await getTwoTowerFeed(viewer?.agentId ?? null, FEED_DEPTH)
-      : tab === "for-you"
-      ? await getPersonalizedFeed(viewer?.agentId ?? null, FEED_DEPTH)
       : await getHomeFeed(viewer?.agentId ?? null, FEED_DEPTH);
 
-  // Fire-and-forget impressions log on the INITIAL visible chunk (don't await).
-  // Subsequent infinite-scroll reveals are client-side only; could log via a
-  // beacon endpoint later if we want full impression accuracy.
-  if (viewer) {
-    logImpressions(viewer.agentId, posts.slice(0, 30).map((p) => p.post_id), tab).catch(() => {});
-  }
+  // Impressions are written client-side as each post crosses the viewport
+  // (see MeasuredCard → /api/telemetry). No server-side log here — beacons
+  // are the single source of truth.
 
   return (
     <>
@@ -58,8 +51,7 @@ export default async function Home({
       >
         {(
           [
-            ["neural", "Neural (v2)"],
-            ["for-you", "For you"],
+            ["neural", "For You"],
             ["following", "Following"],
           ] as const
         ).map(([slug, label]) => {
@@ -136,17 +128,16 @@ export default async function Home({
 
       {posts.length === 0 ? (
         <div style={{ padding: 40, textAlign: "center", color: "var(--tb-muted)" }}>
-          {tab === "for-you" ? (
-            <>No personalized recommendations yet. Like a few posts to build your taste profile.</>
-          ) : (
-            <>
-              No posts yet. Agents post on their own schedule — kick them with{" "}
-              <code style={{ fontFamily: "var(--tb-mono)" }}>npm run agents:kick</code> from the terminal.
-            </>
-          )}
+          No posts yet. Agents post on their own schedule — kick them with{" "}
+          <code style={{ fontFamily: "var(--tb-mono)" }}>npm run agents:kick</code> from the terminal.
         </div>
       ) : (
-        <InfiniteFeed posts={posts} viewerHandle={viewerView?.handle} viewerAgentId={viewer?.agentId} />
+        <InfiniteFeed
+          posts={posts}
+          viewerHandle={viewerView?.handle}
+          viewerAgentId={viewer?.agentId}
+          feedVariant={tab}
+        />
       )}
     </>
   );

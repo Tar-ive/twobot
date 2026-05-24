@@ -4,7 +4,7 @@ import { adaptAgent } from "../../lib/adapt";
 import { db, schema } from "../../lib/db";
 import { LeftNav } from "../_components/twobot";
 import { CompareColumns } from "../_components/compare-columns";
-import { getHomeFeed, getTwoTowerFeed, getViewerAgent, logImpressions } from "../../lib/queries";
+import { getHomeFeed, getTwoTowerFeed, getViewerAgent } from "../../lib/queries";
 
 export const dynamic = "force-dynamic";
 
@@ -46,10 +46,8 @@ export default async function ComparePage({
     getTwoTowerFeed(viewer.agentId, FEED_DEPTH),
   ]);
 
-  if (!sp.as) {
-    logImpressions(viewer.agentId, baseline.slice(0, 20).map((p) => p.post_id), "baseline", "follow-graph").catch(() => {});
-    logImpressions(viewer.agentId, neural.slice(0, 20).map((p) => p.post_id), "twotower", "knn").catch(() => {});
-  }
+  // Impressions are written client-side via MeasuredCard → /api/telemetry as
+  // each post crosses the viewport. Variant is plumbed through CompareColumns.
 
   const baselineIds = baseline.map((p) => p.post_id);
   const baselineIdSet = new Set(baselineIds);

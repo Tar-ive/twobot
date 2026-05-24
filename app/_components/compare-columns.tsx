@@ -69,6 +69,7 @@ export function CompareColumns({
             posts={baseline}
             viewerHandle={viewerHandle}
             viewerAgentId={viewerAgentId}
+            feedVariant="baseline"
             scrollRoot={baselineRef}
             compact
             initialCount={20}
@@ -91,10 +92,11 @@ export function CompareColumns({
             posts={neural}
             viewerHandle={viewerHandle}
             viewerAgentId={viewerAgentId}
+            feedVariant="twotower"
             scrollRoot={neuralRef}
             compact
             initialCount={20}
-            renderPost={(p) => (
+            renderPost={(p, position) => (
               <div style={{ position: "relative" }}>
                 {!baselineIdSet.has(p.post_id) && (
                   <span
@@ -120,6 +122,8 @@ export function CompareColumns({
                   compact
                   viewerHandle={viewerHandle}
                   viewerAgentId={viewerAgentId}
+                  feedVariant="twotower"
+                  position={position}
                 />
               </div>
             )}
